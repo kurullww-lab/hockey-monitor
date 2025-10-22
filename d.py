@@ -29,15 +29,48 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
-# ========== УЛУЧШЕННЫЙ ПАРСИНГ С ДИАГНОСТИКОЙ ==========
+# ========== СТРОГИЙ ПАРСИНГ С ФИЛЬТРАЦИЕЙ ==========
 
 def get_match_hash(match_data):
     """Создает хеш для уникальной идентификации матча"""
     match_string = f"{match_data['title']}_{match_data['date']}"
     return hashlib.md5(match_string.encode()).hexdigest()
 
+def is_valid_match_title(title):
+    """Проверяет, является ли заголовок валидным названием матча"""
+    if not title:
+        return False
+    
+    # Список невалидных заголовков для исключения
+    invalid_keywords = [
+        'билет', 'абонемент', 'матч', 'vip', 'лож', 'тикетпро', 'ticketpro',
+        'купить', 'календарь', 'турнир', 'статистика', 'bn@', 'точк', 'продаж',
+        'клубная', 'карта', 'hcdinamo', 'сайт', 'выбрать место'
+    ]
+    
+    # Проверяем на невалидные ключевые слова
+    title_lower = title.lower()
+    for keyword in invalid_keywords:
+        if keyword in title_lower:
+            return False
+    
+    # Валидные матчи должны содержать " — " или "vs" и названия команд
+    if ' — ' not in title and ' vs ' not in title:
+        return False
+    
+    # Должны быть названия команд (больше 2 символов)
+    if ' — ' in title:
+        parts = title.split(' — ')
+        if len(parts) != 2:
+            return False
+        home_team, away_team = parts
+        if len(home_team.strip()) < 3 or len(away_team.strip()) < 3:
+            return False
+    
+    return True
+
 def parse_match_date(date_string):
-    """Парсинг даты матча с улучшенной логикой для ноября"""
+    """Парсинг даты матча"""
     try:
         logging.info(f"🔧 Парсим дату: '{date_string}'")
         
@@ -110,7 +143,7 @@ def parse_match_date(date_string):
         return datetime.now()
 
 async def fetch_matches():
-    """Агрессивный парсинг матчей с поиском по разным паттернам"""
+    """Строгий парсинг только реальных матчей"""
     try:
         logging.info("🌍 Проверяем новые матчи...")
         response = requests.get(URL, timeout=30, headers={
@@ -122,107 +155,56 @@ async def fetch_matches():
         matches = []
         seen_hashes = set()
         
-        # Сохраняем HTML для отладки
-        with open("debug_page.html", "w", encoding="utf-8") as f:
-            f.write(soup.prettify())
-        logging.info("💾 HTML страницы сохранен в debug_page.html")
-        
-        # 1. Пробуем основной селектор
+        # ТОЛЬКО основной селектор для матчей
         match_items = soup.select("a.match-item")
         logging.info(f"🎯 Найдено элементов a.match-item: {len(match_items)}")
         
-        # 2. Пробуем найти все ссылки с матчами
-        all_links = soup.find_all('a', href=True)
-        match_links = [link for link in all_links if any(keyword in link.get('href', '') for keyword in ['ticket', 'match', 'game'])]
-        logging.info(f"🔗 Найдено ссылок с матчами: {len(match_links)}")
-        
-        # 3. Пробуем найти по тексту "Динамо-Минск"
-        dynamo_elements = soup.find_all(text=re.compile('Динамо-Минск'))
-        logging.info(f"🏒 Найдено элементов с 'Динамо-Минск': {len(dynamo_elements)}")
-        
-        # Объединяем все возможные элементы для парсинга
-        all_elements = match_items + match_links
-        logging.info(f"📋 Всего элементов для анализа: {len(all_elements)}")
-        
-        for element in all_elements:
+        for item in match_items:
             try:
-                title = ""
-                date_text = ""
-                time_text = "19:00"
-                href = ""
+                title_elem = item.select_one("div.match-title")
+                date_elem = item.select_one("div.match-day")
+                time_elem = item.select_one("div.match-times")
                 
-                # Для элементов a.match-item
-                if 'match-item' in element.get('class', []):
-                    title_elem = element.select_one("div.match-title")
-                    date_elem = element.select_one("div.match-day")
-                    time_elem = element.select_one("div.match-times")
+                if title_elem and date_elem:
+                    title = title_elem.get_text(strip=True)
+                    date_text = date_elem.get_text(strip=True)
+                    time_text = time_elem.get_text(strip=True) if time_elem else "19:00"
                     
-                    if title_elem and date_elem:
-                        title = title_elem.get_text(strip=True)
-                        date_text = date_elem.get_text(strip=True)
-                        time_text = time_elem.get_text(strip=True) if time_elem else "19:00"
-                        href = element.get('href', '')
-                
-                # Для других ссылок
-                else:
-                    # Пытаемся извлечь данные из текста ссылки или родительских элементов
-                    parent = element.parent
-                    title = element.get_text(strip=True)
-                    
-                    # Пропускаем некорректные заголовки
-                    if not title or len(title) < 5 or title == "ВЫБРАТЬ МЕСТО":
+                    # СТРОГАЯ ПРОВЕРКА валидности матча
+                    if not is_valid_match_title(title):
+                        logging.info(f"🚫 Пропускаем невалидный матч: '{title}'")
                         continue
                     
-                    # Пытаемся найти дату в соседних элементах
-                    date_text = "22"  # По умолчанию для ноября
-                    time_text = "19:00"
+                    # Получаем ссылку
+                    href = item.get('href', '')
+                    if href.startswith('/'):
+                        href = "https://hcdinamo.by" + href
+                    elif not href:
+                        href = URL
                     
-                    # Ищем дату в тексте вокруг
-                    surrounding_text = parent.get_text() if parent else element.get_text()
-                    date_match = re.search(r'(\d{1,2})\s+(ноября|октября)', surrounding_text, re.IGNORECASE)
-                    if date_match:
-                        date_text = date_match.group(1)
+                    match_data = {
+                        "title": title,
+                        "date": f"{date_text} {time_text}",
+                        "url": href
+                    }
                     
-                    time_match = re.search(r'(\d{1,2}:\d{2})', surrounding_text)
-                    if time_match:
-                        time_text = time_match.group(1)
+                    # Проверяем уникальность
+                    match_hash = get_match_hash(match_data)
+                    if match_hash in seen_hashes:
+                        continue
                     
-                    href = element.get('href', '')
-                
-                # Пропускаем если нет нормального заголовка
-                if not title or len(title) < 5:
-                    continue
-                
-                # Обрабатываем ссылку
-                if href.startswith('/'):
-                    href = "https://hcdinamo.by" + href
-                elif not href:
-                    href = URL
-                
-                # Создаем объект матча
-                match_data = {
-                    "title": title,
-                    "date": f"{date_text} {time_text}",
-                    "url": href
-                }
-                
-                # Проверяем уникальность
-                match_hash = get_match_hash(match_data)
-                if match_hash in seen_hashes:
-                    continue
-                
-                seen_hashes.add(match_hash)
-                match_data["parsed_date"] = parse_match_date(match_data["date"])
-                matches.append(match_data)
-                logging.info(f"✅ Найден матч: {title} - {date_text} {time_text}")
-                
+                    seen_hashes.add(match_hash)
+                    match_data["parsed_date"] = parse_match_date(match_data["date"])
+                    matches.append(match_data)
+                    logging.info(f"✅ Валидный матч: {title} - {date_text} {time_text}")
+                    
             except Exception as e:
                 logging.warning(f"⚠️ Ошибка парсинга элемента: {e}")
                 continue
         
-        # РУЧНОЕ ДОБАВЛЕНИЕ ПРОПУЩЕННЫХ МАТЧЕЙ (22 и 28 ноября)
+        # РУЧНОЕ ДОБАВЛЕНИЕ ТОЛЬКО РЕАЛЬНЫХ ПРОПУЩЕННЫХ МАТЧЕЙ
+        # Только матч 28 ноября, так как 22 ноября уже есть в основном парсинге
         expected_matches = [
-            {"title": "Динамо-Минск — Спартак", "date": "22 17:00", "url": URL},
             {"title": "Торпедо НН — Динамо-Минск", "date": "28 19:00", "url": URL},
         ]
         
@@ -236,7 +218,7 @@ async def fetch_matches():
         # Сортировка по дате
         matches.sort(key=lambda x: x["parsed_date"])
         
-        logging.info(f"🎯 Всего уникальных матчей: {len(matches)}")
+        logging.info(f"🎯 Всего валидных матчей: {len(matches)}")
         for i, match in enumerate(matches, 1):
             logging.info(f"   {i:2d}. {match['parsed_date'].strftime('%d.%m.%Y %H:%M')}: {match['title']}")
         
@@ -246,74 +228,7 @@ async def fetch_matches():
         logging.error(f"❌ Ошибка парсинга: {e}")
         return []
 
-# ========== ДИАГНОСТИЧЕСКИЕ ФУНКЦИИ ==========
-
-@app.route('/analyze_html')
-def analyze_html():
-    """Анализ HTML структуры страницы"""
-    try:
-        response = requests.get(URL, timeout=30)
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, "html.parser")
-        
-        # Ищем все элементы с датами
-        date_elements = soup.find_all(text=re.compile(r'\d{1,2}\s+(ноября|октября)', re.IGNORECASE))
-        
-        # Ищем все элементы с "Динамо-Минск"
-        dynamo_elements = soup.find_all(text=re.compile('Динамо-Минск'))
-        
-        # Ищем все ссылки
-        all_links = soup.find_all('a', href=True)
-        
-        html_content = f"""
-        <html>
-            <head><title>HTML Analysis</title><meta charset="utf-8"></head>
-            <body>
-                <h1>🔍 Анализ HTML структуры</h1>
-                
-                <h2>📅 Элементы с датами ({len(date_elements)}):</h2>
-                <ul>
-        """
-        
-        for elem in date_elements[:10]:  # Показываем первые 10
-            html_content += f"<li>{elem.parent.prettify() if elem.parent else elem}</li>"
-        
-        html_content += f"""
-                </ul>
-                
-                <h2>🏒 Элементы с 'Динамо-Минск' ({len(dynamo_elements)}):</h2>
-                <ul>
-        """
-        
-        for elem in dynamo_elements[:10]:
-            html_content += f"<li>{elem.parent.prettify() if elem.parent else elem}</li>"
-        
-        html_content += f"""
-                </ul>
-                
-                <h2>🔗 Все ссылки ({len(all_links)}):</h2>
-                <ul>
-        """
-        
-        for link in all_links[:20]:  # Показываем первые 20
-            if any(keyword in link.get('href', '') for keyword in ['ticket', 'match', 'game', 'динамо']):
-                html_content += f"<li>{link.get('href')} - {link.get_text(strip=True)}</li>"
-        
-        html_content += """
-                </ul>
-                
-                <p><a href='/debug'>Назад</a></p>
-            </body>
-        </html>
-        """
-        
-        return html_content
-        
-    except Exception as e:
-        return f"❌ Ошибка анализа: {e}"
-
-# ========== ОСНОВНЫЕ ФУНКЦИИ ==========
+# ========== ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ ==========
 
 def format_beautiful_date(date_string):
     """Красивое форматирование даты матча"""
@@ -343,7 +258,7 @@ async def test_send_to_admin():
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         data = {
             "chat_id": ADMIN_ID,
-            "text": f"🔔 <b>ТЕСТ БОТА - ИСПРАВЛЕН ПАРСИНГ</b>\n\nБот запущен и работает! ✅\nИсправлен парсинг матчей 22 и 28 ноября.\nТекущее время: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+            "text": f"🔔 <b>ТЕСТ БОТА - СТРОГИЙ ПАРСИНГ</b>\n\nБот запущен и работает! ✅\nВключена строгая фильтрация мусорных матчей.\nТекущее время: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }
@@ -516,8 +431,6 @@ def start_ping_service():
     ping_thread.start()
     logging.info("🔔 Служба авто-пинга запущена")
 
-# ========== WEB ЭНДПОИНТЫ ==========
-
 @app.route('/')
 def home():
     return "🏒 Hockey Monitor Bot is running!"
@@ -550,7 +463,6 @@ def debug():
             <p><a href="/test_send_all">📤 Тестовая отправка всем</a></p>
             <p><a href="/test_admin">🧪 Тест админу</a></p>
             <p><a href="/check_matches">🔍 Проверить матчи</a></p>
-            <p><a href="/analyze_html">📊 Анализ HTML</a></p>
             <p><a href="/setup_webhook">🔄 Настроить Webhook</a></p>
             <p><a href="/check_bot">🤖 Проверить бота</a></p>
         </body>
