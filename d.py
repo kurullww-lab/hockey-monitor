@@ -77,42 +77,36 @@ async def send_telegram(text: str):
             pass
 
 async def fetch_matches():
-    for attempt in range(3):
-        try:
-            logging.info(f"🌍 Загрузка страницы (попытка {attempt + 1}/3)...")
-            async with async_playwright() as p:
-                # Увеличиваем таймауты
-                browser = await p.chromium.launch(
-                    headless=True, 
-                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-                )
-                page = await browser.new_page()
-                
-                # Увеличиваем таймаут до 60 секунд и используем networkidle
-                await page.goto(URL, timeout=60000, wait_until="networkidle")
-                await page.wait_for_selector("div.match-list", timeout=30000)
-
-                html = await page.content()
-                await browser.close()
-
-            soup = BeautifulSoup(html, "html.parser")
-            matches = []
-            for item in soup.select("a.match-item"):
-                title = item.select_one("div.match-title")
-                date = item.select_one("div.match-day")
-                time = item.select_one("div.match-times")
-                if title and date and time:
-                    href = item.get("href", URL)
-                    if href.startswith("/"):
-                        href = "https://hcdinamo.by" + href
-                    matches.append({
-                        "title": title.text.strip(),
-                        "date": f"{date.text.strip()} {time.text.strip()}",
-                        "url": href
-                    })
-            
-            logging.info(f"🎯 Найдено матчей: {len(matches)}")
-            return matches
+    """Попробуем простой HTTP запрос без браузера"""
+    try:
+        logging.info("🌍 Попытка загрузки через requests...")
+        response = requests.get(URL, timeout=30, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        matches = []
+        for item in soup.select("a.match-item"):
+            title = item.select_one("div.match-title")
+            date = item.select_one("div.match-day")
+            time = item.select_one("div.match-times")
+            if title and date and time:
+                href = item.get("href", URL)
+                if href.startswith("/"):
+                    href = "https://hcdinamo.by" + href
+                matches.append({
+                    "title": title.text.strip(),
+                    "date": f"{date.text.strip()} {time.text.strip()}",
+                    "url": href
+                })
+        
+        logging.info(f"🎯 Найдено матчей: {len(matches)}")
+        return matches
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка requests: {e}")
+        return []
             
         except Exception as e:
             logging.error(f"❌ Ошибка парсинга (попытка {attempt + 1}): {e}")
