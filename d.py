@@ -31,7 +31,7 @@ app = Flask(__name__)
 # ========== ИСПРАВЛЕННЫЙ ПАРСИНГ ДАТ ==========
 
 def parse_match_date(date_string):
-    """Исправленный парсинг даты матча - правильное определение года"""
+    """Парсинг даты матча - фиксированный 2025 год для сезона"""
     try:
         logging.info(f"🔧 Парсим дату: '{date_string}'")
         
@@ -39,6 +39,11 @@ def parse_match_date(date_string):
         months_ru = {
             'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6,
             'июля': 7, 'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
+        }
+        
+        months_ru_short = {
+            'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'мая': 5, 'июн': 6,
+            'июл': 7, 'авг': 8, 'сен': 9, 'окт': 10, 'ноя': 11, 'дек': 12
         }
         
         # Приводим к нижнему регистру
@@ -59,10 +64,29 @@ def parse_match_date(date_string):
             if month_name in date_lower:
                 month_found = month_num
                 break
-        
-        # Если месяц не нашли, используем текущий месяц
+                
         if not month_found:
-            month_found = datetime.now().month
+            for month_short, month_num in months_ru_short.items():
+                if month_short in date_lower:
+                    month_found = month_num
+                    break
+        
+        # Если месяц не нашли, определяем по текущей дате
+        if not month_found:
+            try:
+                match_day = int(day_str)
+                current_date = datetime.now()
+                current_day = current_date.day
+                current_month = current_date.month
+                
+                if match_day < current_day:
+                    month_found = current_month + 1
+                    if month_found > 12:
+                        month_found = 1
+                else:
+                    month_found = current_month
+            except:
+                month_found = datetime.now().month
         
         # Парсим день
         try:
@@ -84,30 +108,11 @@ def parse_match_date(date_string):
         except:
             hours, minutes = 19, 0
         
-        # ОПРЕДЕЛЕНИЕ ГОДА - УЧИТЫВАЕМ ТЕКУЩИЙ 2025 ГОД
-        current_date = datetime.now()
-        current_year = current_date.year  # 2025
-        
-        # Логика для хоккейного сезона 2025-2026:
-        # - Матчи с сентября по декабрь 2025 года
-        # - Матчи с января по апрель 2026 года
-        
-        if month_found >= 9:  # Сентябрь-Декабрь
-            match_year = current_year  # 2025
-        else:  # Январь-Август
-            match_year = current_year + 1  # 2026
+        # ВАЖНО: Все матчи относятся к сезону 2025-2026
+        match_year = 2025
         
         # Создаем объект datetime
         match_date = datetime(match_year, month_found, day, hours, minutes)
-        
-        # Проверяем, не в прошлом ли матч
-        if match_date < current_date:
-            # Если матч в прошлом, значит это следующий сезон
-            if month_found >= 9:
-                match_date = match_date.replace(year=match_year + 1)
-            else:
-                match_date = match_date.replace(year=match_year)
-            logging.info(f"🔄 Корректируем год для прошедшей даты: {match_date}")
         
         logging.info(f"✅ Дата распарсена: {match_date.strftime('%d.%m.%Y %H:%M')}")
         return match_date
@@ -169,25 +174,8 @@ def validate_matches(matches):
             conflicts.append(conflict_info)
             logging.error(conflict_info)
     
-    # Проверяем годы матчей
-    current_year = datetime.now().year
-    for match in matches:
-        match_year = match["parsed_date"].year
-        if match_year not in [current_year, current_year + 1]:
-            logging.warning(f"⚠️ Необычный год матча: {match_year} для {match['title']}")
-    
     if conflicts:
         logging.error(f"🚨 Обнаружены конфликты в расписании: {len(conflicts)}")
-        # Для конфликтующих матчей корректируем время
-        for date_key, day_matches in date_groups.items():
-            if len(day_matches) > 1:
-                logging.info(f"🔄 Корректируем время для конфликтующих матчей...")
-                for i, match in enumerate(day_matches):
-                    # Сдвигаем время на 30 минут для каждого следующего матча
-                    new_time = match["parsed_date"].replace(minute=match["parsed_date"].minute + (i * 30))
-                    match["parsed_date"] = new_time
-                    logging.info(f"   - {match['title']} → {new_time.strftime('%H:%M')}")
-        
         return False
     
     logging.info("✅ Данные матчей корректны")
@@ -274,7 +262,7 @@ async def send_telegram_with_retry(text: str, max_retries=3):
     
     logging.info(f"📊 Итог отправки: ✅ {successful_sends} успешно, ❌ {failed_sends} ошибок")
 
-# ========== ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ ==========
+# ========== НАСТРОЙКА WEBHOOK ==========
 
 def setup_webhook():
     """Настройка webhook для Telegram"""
@@ -292,6 +280,8 @@ def setup_webhook():
     except Exception as e:
         logging.error(f"❌ Ошибка настройки webhook: {e}")
         return False
+
+# ========== ДИАГНОСТИКА ==========
 
 async def check_bot_status():
     """Проверка статуса бота и подписчиков"""
@@ -314,6 +304,8 @@ async def check_bot_status():
         logging.info(f"   - {sub} {'(ADMIN)' if sub == ADMIN_ID else ''}")
     
     return True
+
+# ========== КРАСИВЫЕ УВЕДОМЛЕНИЯ ==========
 
 def create_beautiful_message(match):
     """Создание красивого сообщения о матче"""
@@ -364,6 +356,8 @@ def create_removed_message(match):
     )
     return message
 
+# ========== АВТО-ПИНГ СИСТЕМА ==========
+
 def start_ping_service():
     def ping_loop():
         while True:
@@ -377,6 +371,8 @@ def start_ping_service():
     ping_thread = Thread(target=ping_loop, daemon=True)
     ping_thread.start()
     logging.info("🔔 Служба авто-пинга запущена")
+
+# ========== WEB ЭНДПОИНТЫ ==========
 
 @app.route('/')
 def home():
@@ -488,8 +484,11 @@ def add_sub_manual(chat_id):
         return f"✅ Подписчик {chat_id} добавлен и отправлено уведомление. <a href='/debug'>Назад</a>"
     return f"❌ Ошибка добавления {chat_id}"
 
+# ========== TELEGRAM WEBHOOK ==========
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    """Обработчик команд из Telegram"""
     try:
         data = request.get_json()
         logging.info(f"📨 Получен webhook: {json.dumps(data, ensure_ascii=False)}")
@@ -566,6 +565,8 @@ def send_telegram_sync(chat_id, text):
     except Exception as e:
         logging.error(f"❌ Ошибка отправки ответа {chat_id}: {e}")
 
+# ========== ОСНОВНЫЕ ФУНКЦИИ ==========
+
 def init_db():
     conn = sqlite3.connect('subscribers.db')
     c = conn.cursor()
@@ -622,10 +623,13 @@ async def fetch_matches():
         
         soup = BeautifulSoup(response.text, "html.parser")
         matches = []
+        
+        # Ищем все карточки матчей
         for item in soup.select("a.match-item"):
             title = item.select_one("div.match-title")
             date = item.select_one("div.match-day")
             time = item.select_one("div.match-times")
+            
             if title and date and time:
                 href = item.get("href", URL)
                 if href.startswith("/"):
@@ -639,6 +643,7 @@ async def fetch_matches():
                 
                 match_data["parsed_date"] = parse_match_date(match_data["date"])
                 matches.append(match_data)
+                logging.info(f"📋 Найден матч: {title.text.strip()} - {date.text.strip()} {time.text.strip()}")
         
         # Сортировка по дате
         matches.sort(key=lambda x: x["parsed_date"])
@@ -646,7 +651,7 @@ async def fetch_matches():
         # Валидация данных
         validate_matches(matches)
         
-        logging.info(f"🎯 Найдено матчей: {len(matches)}")
+        logging.info(f"🎯 Всего найдено матчей: {len(matches)}")
         for match in matches:
             logging.info(f"   - {match['parsed_date'].strftime('%d.%m.%Y %H:%M')}: {match['title']}")
         
