@@ -28,7 +28,181 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
-# ========== НАСТРОЙКА WEBHOOK ==========
+# ========== УЛУЧШЕННЫЙ ПАРСИНГ ДАТ ==========
+
+def parse_match_date(date_string):
+    """Улучшенный парсинг даты матча с учетом текущего сезона"""
+    try:
+        logging.info(f"🔧 Парсим дату: '{date_string}'")
+        
+        # Словари месяцев
+        months_ru = {
+            'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6,
+            'июля': 7, 'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
+        }
+        
+        months_ru_short = {
+            'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'мая': 5, 'июн': 6,
+            'июл': 7, 'авг': 8, 'сен': 9, 'окт': 10, 'ноя': 11, 'дек': 12
+        }
+        
+        # Приводим к нижнему регистру
+        date_lower = date_string.lower().strip()
+        
+        # Разбираем части даты
+        parts = date_string.split()
+        if len(parts) < 2:
+            logging.warning(f"⚠️ Недостаточно частей в дате: {date_string}")
+            return datetime.now()
+        
+        # Извлекаем день и время
+        day_str = parts[0].strip()
+        time_str = parts[-1].strip()
+        
+        # Определяем год хоккейного сезона (сезон обычно с августа по апрель)
+        current_date = datetime.now()
+        current_year = current_date.year
+        current_month = current_date.month
+        
+        # Хоккейный сезон: если сейчас с августа по декабрь - это текущий год
+        # если с января по июль - это следующий год для матчей после августа
+        season_year = current_year
+        
+        # Пытаемся найти месяц в строке
+        month_found = None
+        for month_name, month_num in months_ru.items():
+            if month_name in date_lower:
+                month_found = month_num
+                break
+                
+        if not month_found:
+            for month_short, month_num in months_ru_short.items():
+                if month_short in date_lower:
+                    month_found = month_num
+                    break
+        
+        # Если месяц не нашли, используем текущий месяц как fallback
+        if not month_found:
+            logging.warning(f"⚠️ Не найден месяц в дате: {date_string}")
+            month_found = current_month
+        
+        # ЛОГИКА ОПРЕДЕЛЕНИЯ ГОДА ДЛЯ ХОККЕЙНОГО СЕЗОНА:
+        # Матчи обычно идут с сентября по апрель
+        # Если текущий месяц с января по июль, а матч с сентября по декабрь - это следующий год
+        # Если текущий месяц с августа по декабрь, а матч с января по июль - это следующий год
+        
+        if current_month >= 8:  # Август-Декабрь
+            if month_found >= 1 and month_found <= 7:  # Январь-Июль
+                season_year = current_year + 1
+            else:  # Август-Декабрь
+                season_year = current_year
+        else:  # Январь-Июль
+            if month_found >= 8:  # Август-Декабрь
+                season_year = current_year
+            else:  # Январь-Июль
+                season_year = current_year
+        
+        # Парсим время
+        try:
+            if ':' in time_str:
+                hours, minutes = map(int, time_str.split(':'))
+            else:
+                # Пытаемся извлечь время из строки регулярным выражением
+                time_match = re.search(r'(\d{1,2}):(\d{2})', time_str)
+                if time_match:
+                    hours, minutes = int(time_match.group(1)), int(time_match.group(2))
+                else:
+                    hours, minutes = 19, 0  # время по умолчанию
+        except:
+            hours, minutes = 19, 0
+        
+        # Парсим день
+        try:
+            day = int(day_str)
+        except:
+            # Пытаемся извлечь день регулярным выражением
+            day_match = re.search(r'(\d{1,2})', day_str)
+            if day_match:
+                day = int(day_match.group(1))
+            else:
+                day = 1
+        
+        # Создаем объект datetime
+        match_date = datetime(season_year, month_found, day, hours, minutes)
+        
+        # Дополнительная проверка: если дата в прошлом более чем на 30 дней, 
+        # значит это следующий год (для случаев когда сезон переходит через год)
+        if match_date < current_date and (current_date - match_date).days > 30:
+            match_date = match_date.replace(year=season_year + 1)
+            logging.info(f"🔄 Корректируем год для прошедшей даты: {match_date}")
+        
+        logging.info(f"✅ Дата распарсена: {match_date.strftime('%d.%m.%Y %H:%M')}")
+        return match_date
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка парсинга даты '{date_string}': {e}")
+        return datetime.now()
+
+def format_beautiful_date(date_string):
+    """Красивое форматирование даты матча с правильным определением месяца и года"""
+    try:
+        # Парсим дату для получения корректного года
+        parsed_date = parse_match_date(date_string)
+        
+        months_ru = [
+            'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+            'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
+        ]
+        
+        # Извлекаем время из исходной строки
+        time_match = re.search(r'(\d{1,2}:\d{2})', date_string)
+        time_str = time_match.group(1) if time_match else "19:00"
+        
+        day = parsed_date.day
+        month_name = months_ru[parsed_date.month - 1]
+        year = parsed_date.year
+        
+        return f"🗓 {day} {month_name} {year} ⏰ {time_str}"
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка форматирования даты '{date_string}': {e}")
+        return f"📅 {date_string}"
+
+# ========== ПРОВЕРКА КОРРЕКТНОСТИ РАСПИСАНИЯ ==========
+
+def validate_schedule(matches):
+    """Проверка корректности расписания матчей"""
+    logging.info("🔍 Проверка корректности расписания...")
+    
+    # Группируем матчи по дате
+    matches_by_date = {}
+    for match in matches:
+        date_key = match["parsed_date"].strftime('%Y-%m-%d')
+        if date_key not in matches_by_date:
+            matches_by_date[date_key] = []
+        matches_by_date[date_key].append(match)
+    
+    # Проверяем матчи в один день
+    issues = []
+    for date, day_matches in matches_by_date.items():
+        if len(day_matches) > 1:
+            # Проверяем, все ли матчи в один день домашние/выездные
+            home_games = [m for m in day_matches if m['title'].startswith('Динамо-Минск')]
+            away_games = [m for m in day_matches if not m['title'].startswith('Динамо-Минск')]
+            
+            if home_games and away_games:
+                issue = f"❌ В один день ({date}) есть и домашний и выездной матч!"
+                issues.append(issue)
+                logging.error(issue)
+    
+    if issues:
+        logging.warning(f"⚠️ Обнаружены проблемы в расписании: {len(issues)}")
+        for issue in issues:
+            logging.warning(f"   {issue}")
+    
+    return len(issues) == 0
+
+# ========== ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ ==========
 
 def setup_webhook():
     """Настройка webhook для Telegram"""
@@ -47,11 +221,8 @@ def setup_webhook():
         logging.error(f"❌ Ошибка настройки webhook: {e}")
         return False
 
-# ========== ДИАГНОСТИКА ==========
-
 async def check_bot_status():
     """Проверка статуса бота и подписчиков"""
-    # Проверяем токен бота
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"
         response = requests.get(url, timeout=10)
@@ -65,7 +236,6 @@ async def check_bot_status():
         logging.error(f"❌ Ошибка проверки бота: {e}")
         return False
     
-    # Проверяем подписчиков
     subscribers = load_subscribers()
     logging.info(f"👥 Всего подписчиков: {len(subscribers)}")
     for sub in subscribers:
@@ -73,179 +243,15 @@ async def check_bot_status():
     
     return True
 
-# ========== ПАРСИНГ И СОРТИРОВКА ДАТ ==========
-
-def parse_match_date(date_string):
-    """Парсинг даты матча для сортировки"""
-    try:
-        # Приводим к нижнему регистру для удобства
-        date_lower = date_string.lower()
-        
-        # Словари месяцев
-        months_ru = {
-            'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6,
-            'июля': 7, 'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
-        }
-        
-        months_ru_short = {
-            'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'мая': 5, 'июн': 6,
-            'июл': 7, 'авг': 8, 'сен': 9, 'окт': 10, 'ноя': 11, 'дек': 12
-        }
-        
-        # Ищем день, месяц и время
-        parts = date_string.split()
-        if len(parts) < 2:
-            return datetime.now()
-            
-        day_str = parts[0]
-        time_str = parts[-1]
-        
-        # Пытаемся найти месяц
-        month_found = None
-        year = datetime.now().year
-        
-        for month_name, month_num in months_ru.items():
-            if month_name in date_lower:
-                month_found = month_num
-                break
-                
-        if not month_found:
-            for month_short, month_num in months_ru_short.items():
-                if month_short in date_lower:
-                    month_found = month_num
-                    break
-        
-        # Если месяц не нашли, определяем логически
-        if not month_found:
-            try:
-                match_day = int(day_str)
-                current_day = datetime.now().day
-                current_month = datetime.now().month
-                
-                if match_day < current_day:
-                    month_found = current_month + 1
-                    if month_found > 12:
-                        month_found = 1
-                        year += 1
-                else:
-                    month_found = current_month
-            except:
-                month_found = datetime.now().month
-        
-        # Парсим время
-        try:
-            hours, minutes = map(int, time_str.split(':'))
-        except:
-            hours, minutes = 19, 0  # время по умолчанию
-            
-        # Создаем объект datetime
-        match_date = datetime(year, month_found, int(day_str), hours, minutes)
-        
-        # Если дата в прошлом, значит это следующий год
-        if match_date < datetime.now():
-            match_date = match_date.replace(year=year + 1)
-            
-        return match_date
-        
-    except Exception as e:
-        logging.error(f"❌ Ошибка парсинга даты '{date_string}': {e}")
-        return datetime.now()
-
-# ========== КРАСИВЫЕ УВЕДОМЛЕНИЯ ==========
-
-def format_beautiful_date(date_string):
-    """Красивое форматирование даты матча с правильным определением месяца"""
-    try:
-        logging.info(f"🔧 Форматируем дату: '{date_string}'")
-        
-        months_ru = [
-            'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-            'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
-        ]
-        
-        months_ru_short = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 
-                          'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
-        
-        # Пытаемся найти месяц в строке
-        date_lower = date_string.lower()
-        
-        for i, month in enumerate(months_ru):
-            if month in date_lower:
-                # Нашли полное название месяца
-                parts = date_string.split()
-                day = parts[0] if parts else "?"
-                time = parts[-1] if len(parts) > 1 else "?"
-                current_year = datetime.now().year
-                
-                # Если месяц уже прошел в этом году, значит это следующий год
-                if i + 1 < datetime.now().month:
-                    current_year += 1
-                    
-                return f"🗓 {day} {month} {current_year} ⏰ {time}"
-        
-        # Пробуем короткие названия месяцев
-        for i, month_short in enumerate(months_ru_short):
-            if month_short in date_lower:
-                parts = date_string.split()
-                day = parts[0] if parts else "?"
-                time = parts[-1] if len(parts) > 1 else "?"
-                current_year = datetime.now().year
-                full_month = months_ru[i]
-                
-                if i + 1 < datetime.now().month:
-                    current_year += 1
-                    
-                return f"🗓 {day} {full_month} {current_year} ⏰ {time}"
-        
-        # Если месяц не указан, определяем логически
-        parts = date_string.split()
-        if len(parts) >= 2:
-            day_str = parts[0]
-            time = parts[1]
-            
-            try:
-                match_day = int(day_str)
-                now = datetime.now()
-                current_day = now.day
-                current_month = now.month
-                current_year = now.year
-                
-                if match_day < current_day:
-                    # Матч в следующем месяце
-                    match_month = current_month + 1
-                    if match_month > 12:
-                        match_month = 1
-                        current_year += 1
-                else:
-                    # Матч в текущем месяце
-                    match_month = current_month
-                
-                if 1 <= match_month <= 12:
-                    month_name = months_ru[match_month - 1]
-                    return f"🗓 {day_str} {month_name} {current_year} ⏰ {time}"
-                    
-            except ValueError:
-                # Не удалось преобразовать день в число
-                pass
-        
-        # Если ничего не помогло, возвращаем оригинальную строку
-        return f"📅 {date_string}"
-        
-    except Exception as e:
-        logging.error(f"❌ Ошибка форматирования даты '{date_string}': {e}")
-        return f"📅 {date_string}"
-
 def create_beautiful_message(match):
     """Создание красивого сообщения о матче"""
     beautiful_date = format_beautiful_date(match["date"])
     
-    # Разделяем название матча для лучшего отображения
     title = match['title']
     if ' — ' in title:
         home_team, away_team = title.split(' — ')
         formatted_title = f"🏒 {home_team} vs {away_team}"
         
-        # Определяем тип матча (домашний/выездной)
         if 'Динамо-Минск' in title:
             if title.startswith('Динамо-Минск'):
                 match_type = "🏠 Домашний матч"
@@ -286,8 +292,6 @@ def create_removed_message(match):
     )
     return message
 
-# ========== АВТО-ПИНГ СИСТЕМА ==========
-
 def start_ping_service():
     def ping_loop():
         while True:
@@ -301,8 +305,6 @@ def start_ping_service():
     ping_thread = Thread(target=ping_loop, daemon=True)
     ping_thread.start()
     logging.info("🔔 Служба авто-пинга запущена")
-
-# ========== WEB ЭНДПОИНТЫ ==========
 
 @app.route('/')
 def home():
@@ -343,7 +345,6 @@ def debug():
 
 @app.route('/test_send_all')
 def test_send_all():
-    """Тестовая отправка всем подписчикам с детальной информацией"""
     subscribers = load_subscribers()
     results = []
     
@@ -368,7 +369,6 @@ def test_send_all():
 
 @app.route('/setup_webhook')
 def setup_webhook_route():
-    """Настройка webhook через веб-интерфейс"""
     if setup_webhook():
         return "✅ Webhook настроен успешно! <a href='/debug'>Назад</a>"
     else:
@@ -376,9 +376,6 @@ def setup_webhook_route():
 
 @app.route('/check_bot')
 def check_bot_route():
-    """Проверка бота через веб-интерфейс"""
-    import threading
-    
     def check():
         asyncio.run(check_bot_status())
     
@@ -389,9 +386,7 @@ def check_bot_route():
 
 @app.route('/add_subscriber/<chat_id>')
 def add_sub_manual(chat_id):
-    """Добавить подписчика вручную"""
     if add_subscriber(chat_id, "manual"):
-        # Отправляем тестовое сообщение новому подписчику
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         data = {
             "chat_id": chat_id,
@@ -406,11 +401,8 @@ def add_sub_manual(chat_id):
         return f"✅ Подписчик {chat_id} добавлен и отправлено уведомление. <a href='/debug'>Назад</a>"
     return f"❌ Ошибка добавления {chat_id}"
 
-# ========== TELEGRAM WEBHOOK ==========
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Обработчик команд из Telegram"""
     try:
         data = request.get_json()
         logging.info(f"📨 Получен webhook: {json.dumps(data, ensure_ascii=False)}")
@@ -471,7 +463,6 @@ def webhook():
         return 'ERROR'
 
 def send_telegram_sync(chat_id, text):
-    """Синхронная отправка сообщения в Telegram"""
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         data = {
@@ -487,8 +478,6 @@ def send_telegram_sync(chat_id, text):
             logging.error(f"❌ Ошибка отправки ответа {chat_id}: {response.text}")
     except Exception as e:
         logging.error(f"❌ Ошибка отправки ответа {chat_id}: {e}")
-
-# ========== ОСНОВНЫЕ ФУНКЦИИ ==========
 
 def init_db():
     conn = sqlite3.connect('subscribers.db')
@@ -537,7 +526,6 @@ def remove_subscriber(chat_id):
         return False
 
 async def send_telegram_with_retry(text: str, max_retries=3):
-    """Отправка сообщения с повторными попытками"""
     subscribers = load_subscribers()
     logging.info(f"📤 Отправка уведомления {len(subscribers)} подписчикам")
     
@@ -555,13 +543,13 @@ async def send_telegram_with_retry(text: str, max_retries=3):
                 
                 if response.status_code == 200:
                     logging.info(f"✅ Уведомление отправлено {chat_id}")
-                    break  # Успешно отправили, выходим из цикла попыток
+                    break
                 else:
                     error_msg = response.json().get('description', 'Unknown error')
                     logging.warning(f"⚠️ Попытка {attempt + 1}/{max_retries} для {chat_id}: {error_msg}")
                     
                     if attempt < max_retries - 1:
-                        await asyncio.sleep(2)  # Ждем перед повторной попыткой
+                        await asyncio.sleep(2)
                     else:
                         logging.error(f"❌ Не удалось отправить {chat_id} после {max_retries} попыток")
                         
@@ -597,12 +585,14 @@ async def fetch_matches():
                     "url": href
                 }
                 
-                # Добавляем parsed_date для сортировки
                 match_data["parsed_date"] = parse_match_date(match_data["date"])
                 matches.append(match_data)
         
-        # СОРТИРОВКА по дате от ближайших к поздним
+        # Сортировка по дате
         matches.sort(key=lambda x: x["parsed_date"])
+        
+        # Проверка корректности расписания
+        validate_schedule(matches)
         
         logging.info(f"🎯 Найдено матчей: {len(matches)}")
         for match in matches:
@@ -618,10 +608,7 @@ async def monitor():
     logging.info("🚀 Запуск мониторинга")
     init_db()
     
-    # Настраиваем webhook
     setup_webhook()
-    
-    # Проверяем статус бота
     await check_bot_status()
     
     if ADMIN_ID not in load_subscribers():
@@ -654,24 +641,20 @@ async def monitor():
                 if added or removed:
                     logging.info(f"✨ Изменения: +{len(added)}, -{len(removed)}")
                     
-                    # Уведомления о новых матчах (в отсортированном порядке)
                     for match in new_matches:
                         if match["title"] in added:
                             msg = create_beautiful_message(match)
                             await send_telegram_with_retry(msg)
-                            await asyncio.sleep(1)  # Пауза между сообщениями
+                            await asyncio.sleep(1)
                     
-                    # Уведомления об удаленных матчах
                     for match in old_matches:
                         if match["title"] in removed:
                             msg = create_removed_message(match)
                             await send_telegram_with_retry(msg)
                             await asyncio.sleep(1)
                     
-                    # Сохраняем новые матчи
                     try:
                         with open(STATE_FILE, "w", encoding="utf-8") as f:
-                            # Сохраняем без parsed_date (он не JSON serializable)
                             save_matches = [{"title": m["title"], "date": m["date"], "url": m["url"]} 
                                           for m in new_matches]
                             json.dump(save_matches, f, ensure_ascii=False, indent=2)
