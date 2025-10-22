@@ -55,6 +55,11 @@ def init_db():
     conn.commit()
     conn.close()
 
+# Автоматически подписываем админа если его нет в базе
+if ADMIN_ID not in load_subscribers():
+    add_subscriber(ADMIN_ID, "admin")
+    logging.info(f"✅ Автоматически подписан админ: {ADMIN_ID}")
+
 def load_subscribers():
     try:
         conn = sqlite3.connect('subscribers.db')
@@ -85,6 +90,21 @@ async def fetch_matches():
     
     # Если не получилось, пробуем Playwright
     return await fetch_with_playwright()
+
+def add_subscriber(chat_id, username=""):
+    """Добавление подписчика в базу"""
+    try:
+        conn = sqlite3.connect('subscribers.db')
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO subscribers (chat_id, username) VALUES (?, ?)", 
+                 (chat_id, username))
+        conn.commit()
+        conn.close()
+        logging.info(f"✅ Добавлен подписчик: {chat_id} ({username})")
+        return True
+    except Exception as e:
+        logging.error(f"❌ Ошибка добавления подписчика: {e}")
+        return False
 
 async def fetch_with_requests():
     """Попробуем простой HTTP запрос без браузера"""
