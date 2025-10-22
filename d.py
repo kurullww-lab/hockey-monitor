@@ -188,6 +188,10 @@ async def monitor():
                 
                 if added or removed:
                     logging.info(f"✨ Изменения: +{len(added)}, -{len(removed)}")
+                 
+                if len(load_subscribers()) > 0:
+                test_msg = "🔔 Тестовое сообщение от бота"
+                await send_telegram(test_msg)
                     
                     # Отправляем уведомления о новых матчах
                     for m in new_matches:
