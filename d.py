@@ -1,190 +1,169 @@
 import os
 import time
-import logging
 import asyncio
+import logging
 import requests
+from flask import Flask
 from bs4 import BeautifulSoup
 from datetime import datetime
 from aiogram import Bot
-from flask import Flask
 
-# --------------------------------------------
-# 🔧 Настройки
-# --------------------------------------------
+# ==========================
+# 🔧 Конфигурация
+# ==========================
+
 URL = "https://hcdinamo.by/tickets/"
+FALLBACK_URL = "https://r.jina.ai/http://hcdinamo.by/tickets/"
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 300))
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8416784515:AAG1yGWcgm9gGFPJLodfLvEJrtmIFVJjsu8")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-STATE_FILE = "matches.txt"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# --------------------------------------------
-# ⚙️ Логирование
-# --------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger()
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-# --------------------------------------------
-# 🧠 Вспомогательные функции
-# --------------------------------------------
-def load_previous_matches():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return set(f.read().splitlines())
-    return set()
+bot = Bot(token=TELEGRAM_TOKEN)
 
+# ==========================
+# 🧩 Вспомогательные функции
+# ==========================
 
-def save_current_matches(matches):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        for match in matches:
-            f.write(f"{match}\n")
-
-
-async def send_telegram_message(bot, message: str):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("⚠️ TELEGRAM_TOKEN или TELEGRAM_CHAT_ID не заданы, уведомление не отправлено")
-        return
+def parse_match_date(text: str):
+    """Преобразует дату формата '22.11.2025 19:00' в datetime"""
     try:
-        await bot.send_message(TELEGRAM_CHAT_ID, message)
-        logger.info(f"📨 Уведомление отправлено в Telegram: {message}")
-    except Exception as e:
-        logger.error(f"Ошибка отправки сообщения в Telegram: {e}")
-
-# --------------------------------------------
-# 🗓️ Парсинг даты (учёт месяца)
-# --------------------------------------------
-def parse_match_date(day_str: str, current_month: int):
-    """Парсит дату, учитывая текущий месяц"""
-    try:
-        now = datetime.now()
-        parts = day_str.strip().split()
-        if len(parts) == 2:
-            day_part, time_part = parts
-            day = int(day_part)
-            hour, minute = map(int, time_part.split(":"))
-            date_obj = datetime(now.year, current_month, day, hour, minute)
-            logger.info(f"✅ Дата распарсена: {date_obj.strftime('%d.%m.%Y %H:%M')}")
-            return date_obj
-    except Exception as e:
-        logger.error(f"Ошибка парсинга даты '{day_str}': {e}")
+        return datetime.strptime(text.strip(), "%d.%m.%Y %H:%M")
+    except Exception:
         return None
 
 
-# --------------------------------------------
-# 🌍 Получение матчей с сайта
-# --------------------------------------------
-async def fetch_matches():
-    logger.info("🌍 Загружаем страницу...")
-    try:
-        response = requests.get(URL, timeout=15)
-        response.raise_for_status()
-    except Exception as e:
-        logger.error(f"❌ Ошибка при загрузке страницы: {e}")
-        return []
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    matches = []
-
-    # Месяцы
-    current_month = datetime.now().month
-    month_map = {
-        "январь": 1, "февраль": 2, "март": 3, "апрель": 4, "май": 5,
-        "июнь": 6, "июль": 7, "август": 8, "сентябрь": 9,
-        "октябрь": 10, "ноябрь": 11, "декабрь": 12
+def get_html(url):
+    """Загружает HTML с указанного URL с заголовками браузера"""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0 Safari/537.36"
+        ),
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://google.com/",
+        "Connection": "keep-alive"
     }
 
-    for element in soup.select(".matches-list > *"):
-        text = element.get_text(strip=True).lower()
+    try:
+        response = requests.get(url, headers=headers, timeout=20)
+        response.raise_for_status()
+        return response.text
+    except Exception as e:
+        logger.error(f"❌ Ошибка при загрузке {url}: {e}")
+        return ""
 
-        # Если это заголовок месяца
-        for rus_month, num in month_map.items():
-            if rus_month in text:
-                current_month = num
-                logger.info(f"📅 Обнаружен новый месяц: {rus_month} ({num})")
-                break
 
-        # Если это матч
-        if element.name == "a" and "match-item" in element.get("class", []):
-            title = element.get_text(strip=True)
-            date_tag = element.select_one(".match-day")
-            if not date_tag:
-                continue
+async def fetch_matches():
+    """Загружает HTML страницы и парсит матчи (с fallback на зеркало)"""
+    logger.info("🌍 Загружаем страницу...")
 
-            date_text = date_tag.get_text(strip=True)
-            logger.info(f"🔧 Парсим дату: '{date_text}' (месяц {current_month})")
+    html = get_html(URL)
 
-            match_date = parse_match_date(date_text, current_month)
-            if not match_date:
-                continue
+    # Проверка на Cloudflare
+    if "cf-challenge" in html or "Cloudflare" in html or len(html) < 5000:
+        logger.warning("⚠️ Cloudflare блокирует парсинг — пробуем через зеркало...")
+        html = get_html(FALLBACK_URL)
 
-            matches.append({
-                "title": title,
-                "date": match_date.strftime("%Y-%m-%d %H:%M")
-            })
+    if not html:
+        logger.error("❌ Не удалось получить HTML ни с основного сайта, ни с зеркала")
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    elements = soup.select("a.match-item")
+    logger.info(f"🎯 Найдено элементов a.match-item: {len(elements)}")
+
+    matches = []
+    for match in elements:
+        title = match.get_text(strip=True)
+        date_tag = match.select_one(".match-day")
+
+        if not title or not date_tag:
+            continue
+
+        date_text = date_tag.get_text(strip=True)
+        match_date = parse_match_date(date_text)
+        if not match_date:
+            continue
+
+        matches.append({
+            "title": title,
+            "date": match_date.strftime("%Y-%m-%d %H:%M")
+        })
 
     logger.info(f"🎯 Найдено матчей: {len(matches)}")
     return matches
 
 
-# --------------------------------------------
-# 🔁 Основной цикл мониторинга
-# --------------------------------------------
-async def monitor():
-    logger.info("🚀 Запуск мониторинга Dinamo Tickets (requests-only версия)")
-    bot = Bot(token=TELEGRAM_TOKEN)
-    previous_matches = load_previous_matches()
-    logger.info(f"📂 Загружено предыдущих матчей: {len(previous_matches)}")
+async def send_telegram_message(text: str):
+    """Отправка сообщения в Telegram"""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("⚠️ TELEGRAM_TOKEN или TELEGRAM_CHAT_ID не заданы — уведомление не отправлено")
+        return
 
+    try:
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
+        logger.info(f"📩 Отправлено уведомление: {text}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки в Telegram: {e}")
+
+
+async def monitor_matches():
+    """Основной цикл мониторинга"""
+    logger.info("🚀 Запуск мониторинга Dinamo Tickets (requests-only версия)")
+
+    previous = []
     while True:
         logger.info(f"🔄 Проверка в {datetime.now().strftime('%H:%M:%S')}...")
-        matches = await fetch_matches()
-        current_titles = {m['title'] for m in matches if 'title' in m}
+        current = await fetch_matches()
 
-        new_matches = current_titles - previous_matches
-        if new_matches:
-            logger.info(f"🆕 Найдены новые матчи: {len(new_matches)}")
-            message = "🏒 Новые матчи доступны:\n" + "\n".join(new_matches)
-            await send_telegram_message(bot, message)
-            save_current_matches(current_titles)
-            previous_matches = current_titles
+        if not current:
+            logger.warning("⚠️ Не удалось получить список матчей")
+        elif current != previous:
+            if not previous:
+                logger.info(f"📂 Загружено предыдущих матчей: 0")
+            else:
+                logger.info("🆕 Обновление найдено! Отправляем уведомление...")
+                await send_telegram_message("🆕 Изменения на сайте Dinamo Tickets!")
+            previous = current
         else:
             logger.info("✅ Изменений нет")
 
-        logger.info(f"⏰ Следующая проверка через {CHECK_INTERVAL // 60} мин.")
+        logger.info(f"⏰ Следующая проверка через {CHECK_INTERVAL // 60} мин.\n")
         await asyncio.sleep(CHECK_INTERVAL)
 
-
-# --------------------------------------------
-# 🌐 Flask web-сервер (для Render ping)
-# --------------------------------------------
-app = Flask(__name__)
+# ==========================
+# 🌐 Flask веб-сервер
+# ==========================
 
 @app.route("/")
-def home():
-    return "Dinamo Tickets Monitor is running!"
+def index():
+    return "✅ Dinamo Tickets Monitor is running."
 
 @app.route("/health")
 def health():
-    logger.info("🏓 Авто-пинг: 200")
-    return "OK", 200
+    return {"status": "ok"}, 200
 
 
-# --------------------------------------------
-# 🚀 Запуск приложения
-# --------------------------------------------
+# ==========================
+# 🚀 Запуск
+# ==========================
+
 if __name__ == "__main__":
+    port = int(os.getenv("PORT", 10000))
+    logger.info(f"🌐 Запуск веб-сервера на порту {port}...")
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(monitor_matches())
+
     from threading import Thread
-
-    # Отдельный поток для Flask
     def run_flask():
-        port = int(os.environ.get("PORT", 5000))
-        logger.info(f"🌐 Запуск веб-сервера на порту {port}...")
         app.run(host="0.0.0.0", port=port)
+    Thread(target=run_flask).start()
 
-    flask_thread = Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-
-    # Основной цикл мониторинга
-    asyncio.run(monitor())
+    loop.run_forever()
