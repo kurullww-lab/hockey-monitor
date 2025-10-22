@@ -30,10 +30,12 @@ bot = Bot(token=TELEGRAM_TOKEN)
 
 def parse_match_date(text: str):
     """Преобразует дату формата '22.11.2025 19:00' в datetime"""
-    try:
-        return datetime.strptime(text.strip(), "%d.%m.%Y %H:%M")
-    except Exception:
-        return None
+    for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(text.strip(), fmt)
+        except Exception:
+            continue
+    return None
 
 
 def get_html(url):
@@ -59,13 +61,45 @@ def get_html(url):
         return ""
 
 
+def parse_matches(html):
+    """Парсинг матчей с актуальной верстки Dinamo"""
+    soup = BeautifulSoup(html, "html.parser")
+    items = soup.select("a.match-item")
+    logger.info(f"🎯 Найдено элементов a.match-item: {len(items)}")
+
+    matches = []
+    for i, item in enumerate(items, start=1):
+        # Название матча
+        title = item.get_text(" ", strip=True)
+
+        # Дата теперь часто лежит в span с классом match-date или в div.match__info
+        date_tag = item.select_one(".match-date") or item.select_one(".match__info")
+        date_text = date_tag.get_text(strip=True) if date_tag else ""
+
+        # Попробуем вытащить дату из текста, если не найдено
+        if not date_text:
+            import re
+            m = re.search(r"\d{2}\.\d{2}\.\d{4}", title)
+            if m:
+                date_text = m.group(0)
+
+        if not title or not date_text:
+            continue
+
+        matches.append({
+            "title": title,
+            "date": date_text
+        })
+
+    return matches
+
+
 async def fetch_matches():
     """Загружает HTML страницы и парсит матчи (с fallback на зеркало)"""
     logger.info("🌍 Загружаем страницу...")
-
     html = get_html(URL)
 
-    # Проверка на Cloudflare
+    # Проверка Cloudflare
     if "cf-challenge" in html or "Cloudflare" in html or len(html) < 5000:
         logger.warning("⚠️ Cloudflare блокирует парсинг — пробуем через зеркало...")
         html = get_html(FALLBACK_URL)
@@ -74,28 +108,7 @@ async def fetch_matches():
         logger.error("❌ Не удалось получить HTML ни с основного сайта, ни с зеркала")
         return []
 
-    soup = BeautifulSoup(html, "html.parser")
-    elements = soup.select("a.match-item")
-    logger.info(f"🎯 Найдено элементов a.match-item: {len(elements)}")
-
-    matches = []
-    for match in elements:
-        title = match.get_text(strip=True)
-        date_tag = match.select_one(".match-day")
-
-        if not title or not date_tag:
-            continue
-
-        date_text = date_tag.get_text(strip=True)
-        match_date = parse_match_date(date_text)
-        if not match_date:
-            continue
-
-        matches.append({
-            "title": title,
-            "date": match_date.strftime("%Y-%m-%d %H:%M")
-        })
-
+    matches = parse_matches(html)
     logger.info(f"🎯 Найдено матчей: {len(matches)}")
     return matches
 
@@ -115,7 +128,7 @@ async def send_telegram_message(text: str):
 
 async def monitor_matches():
     """Основной цикл мониторинга"""
-    logger.info("🚀 Запуск мониторинга Dinamo Tickets (requests-only версия)")
+    logger.info("🚀 Запуск мониторинга Dinamo Tickets")
 
     previous = []
     while True:
@@ -125,11 +138,18 @@ async def monitor_matches():
         if not current:
             logger.warning("⚠️ Не удалось получить список матчей")
         elif current != previous:
-            if not previous:
-                logger.info(f"📂 Загружено предыдущих матчей: 0")
-            else:
-                logger.info("🆕 Обновление найдено! Отправляем уведомление...")
-                await send_telegram_message("🆕 Изменения на сайте Dinamo Tickets!")
+            logger.info("🆕 Найдены изменения!")
+            added = [m for m in current if m not in previous]
+            removed = [m for m in previous if m not in current]
+
+            msg_parts = []
+            if added:
+                msg_parts.append("➕ Добавлены матчи:\n" + "\n".join(f"• {m['title']}" for m in added))
+            if removed:
+                msg_parts.append("➖ Удалены матчи:\n" + "\n".join(f"• {m['title']}" for m in removed))
+
+            text = "\n\n".join(msg_parts) if msg_parts else "ℹ️ Изменения на сайте."
+            await send_telegram_message(text)
             previous = current
         else:
             logger.info("✅ Изменений нет")
