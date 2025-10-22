@@ -9,7 +9,6 @@ from datetime import datetime
 from playwright.async_api import async_playwright
 from flask import Flask
 import threading
-import time
 
 # Конфигурация
 URL = "https://hcdinamo.by/tickets/"
@@ -31,20 +30,11 @@ def home():
 def health():
     return {"status": "running", "service": "hockey-monitor"}
 
-@app.route('/ping')
-def ping():
-    return "pong"
-
 def run_web_server():
-    """Запускает веб-сервер и ждет пока он забиндится"""
+    """Запускает веб-сервер"""
     logging.info("🌐 Запуск веб-сервера на порту 5000...")
-    
-    # Явно указываем порт и хост
     from waitress import serve
     serve(app, host='0.0.0.0', port=5000)
-    
-    # Или используем стандартный Flask (менее надежно)
-    # app.run(host='0.0.0.0', port=5000, debug=False)
 
 # ========== ОСНОВНЫЕ ФУНКЦИИ БОТА ==========
 
@@ -54,11 +44,6 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS subscribers (chat_id TEXT PRIMARY KEY, username TEXT)''')
     conn.commit()
     conn.close()
-
-# Автоматически подписываем админа если его нет в базе
-if ADMIN_ID not in load_subscribers():
-    add_subscriber(ADMIN_ID, "admin")
-    logging.info(f"✅ Автоматически подписан админ: {ADMIN_ID}")
 
 def load_subscribers():
     try:
@@ -70,26 +55,6 @@ def load_subscribers():
         return subscribers
     except:
         return []
-
-async def send_telegram(text: str):
-    subscribers = load_subscribers()
-    for chat_id in subscribers:
-        try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-            requests.post(url, json=data, timeout=10)
-        except:
-            pass
-
-async def fetch_matches():
-    """Пробуем оба способа парсинга"""
-    # Сначала пробуем простой requests
-    matches = await fetch_with_requests()
-    if matches:
-        return matches
-    
-    # Если не получилось, пробуем Playwright
-    return await fetch_with_playwright()
 
 def add_subscriber(chat_id, username=""):
     """Добавление подписчика в базу"""
@@ -106,8 +71,18 @@ def add_subscriber(chat_id, username=""):
         logging.error(f"❌ Ошибка добавления подписчика: {e}")
         return False
 
-async def fetch_with_requests():
-    """Попробуем простой HTTP запрос без браузера"""
+async def send_telegram(text: str):
+    subscribers = load_subscribers()
+    for chat_id in subscribers:
+        try:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+            requests.post(url, json=data, timeout=10)
+        except:
+            pass
+
+async def fetch_matches():
+    """Парсинг матчей через requests"""
     try:
         logging.info("🌍 Попытка загрузки через requests...")
         response = requests.get(URL, timeout=30, headers={
@@ -138,56 +113,15 @@ async def fetch_with_requests():
         logging.error(f"❌ Ошибка requests: {e}")
         return []
 
-async def fetch_with_playwright():
-    """Парсинг через Playwright"""
-    for attempt in range(2):
-        try:
-            logging.info(f"🌍 Загрузка Playwright (попытка {attempt + 1}/2)...")
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-                )
-                page = await browser.new_page()
-                
-                # Используем domcontentloaded вместо networkidle
-                await page.goto(URL, timeout=30000, wait_until="domcontentloaded")
-                await page.wait_for_selector("div.match-list", timeout=15000)
-
-                html = await page.content()
-                await browser.close()
-
-                # парсинг как обычно
-                soup = BeautifulSoup(html, "html.parser")
-                matches = []
-                for item in soup.select("a.match-item"):
-                    title = item.select_one("div.match-title")
-                    date = item.select_one("div.match-day")
-                    time = item.select_one("div.match-times")
-                    if title and date and time:
-                        href = item.get("href", URL)
-                        if href.startswith("/"):
-                            href = "https://hcdinamo.by" + href
-                        matches.append({
-                            "title": title.text.strip(),
-                            "date": f"{date.text.strip()} {time.text.strip()}",
-                            "url": href
-                        })
-                
-                logging.info(f"🎯 Найдено матчей: {len(matches)}")
-                return matches
-                
-        except Exception as e:
-            logging.error(f"❌ Ошибка Playwright (попытка {attempt + 1}): {e}")
-            await asyncio.sleep(5)
-    
-    return []  # возвращаем пустой список
-
 async def monitor():
     logging.info("🚀 Запуск мониторинга")
     init_db()
     
-    # Проверка подписчиков
+    # Автоматически подписываем админа если его нет в базе
+    if ADMIN_ID not in load_subscribers():
+        add_subscriber(ADMIN_ID, "admin")
+        logging.info(f"✅ Автоматически подписан админ: {ADMIN_ID}")
+    
     subscribers = load_subscribers()
     logging.info(f"👥 Текущие подписчики: {subscribers}")
     
@@ -235,16 +169,17 @@ async def monitor():
             await asyncio.sleep(60)
 
 def main():
-    """Главная функция - запускает и веб-сервер и бота"""
-    # Сначала запускаем веб-сервер
+    """Главная функция"""
+    # Запускаем веб-сервер
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
     
     # Даем время веб-серверу запуститься
+    import time
     time.sleep(3)
     logging.info("🌐 Веб-сервер запущен на порту 5000")
     
-    # Затем запускаем бота
+    # Запускаем бота
     asyncio.run(monitor())
 
 if __name__ == "__main__":
