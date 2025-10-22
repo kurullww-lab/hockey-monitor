@@ -167,7 +167,11 @@ async def monitor():
     logging.info("🚀 Запуск мониторинга")
     init_db()
     
-    # ЗАГРУЖАЕМ предыдущее состояние из файла
+    # Проверка подписчиков
+    subscribers = load_subscribers()
+    logging.info(f"👥 Текущие подписчики: {subscribers}")
+    
+    # Загружаем предыдущее состояние
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             old_matches = json.load(f)
@@ -188,19 +192,13 @@ async def monitor():
                 
                 if added or removed:
                     logging.info(f"✨ Изменения: +{len(added)}, -{len(removed)}")
-                 
-                if len(load_subscribers()) > 0:
-                test_msg = "🔔 Тестовое сообщение от бота"
-                await send_telegram(test_msg)
                     
-                    # Отправляем уведомления о новых матчах
                     for m in new_matches:
                         if m["title"] in added:
                             msg = f"🎉 НОВЫЙ МАТЧ!\n\n🏒 {m['title']}\n📅 {m['date']}\n\n🎟 <a href='{m['url']}'>Купить билеты</a>"
                             await send_telegram(msg)
                             await asyncio.sleep(1)
                     
-                    # СОХРАНЯЕМ новое состояние
                     try:
                         with open(STATE_FILE, "w", encoding="utf-8") as f:
                             json.dump(new_matches, f, ensure_ascii=False, indent=2)
