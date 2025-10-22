@@ -28,10 +28,10 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
-# ========== УЛУЧШЕННЫЙ ПАРСИНГ ДАТ ==========
+# ========== ИСПРАВЛЕННЫЙ ПАРСИНГ ДАТ ==========
 
 def parse_match_date(date_string):
-    """Улучшенный парсинг даты матча с учетом текущего сезона"""
+    """Упрощенный и надежный парсинг даты матча"""
     try:
         logging.info(f"🔧 Парсим дату: '{date_string}'")
         
@@ -41,32 +41,17 @@ def parse_match_date(date_string):
             'июля': 7, 'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
         }
         
-        months_ru_short = {
-            'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'мая': 5, 'июн': 6,
-            'июл': 7, 'авг': 8, 'сен': 9, 'окт': 10, 'ноя': 11, 'дек': 12
-        }
-        
         # Приводим к нижнему регистру
         date_lower = date_string.lower().strip()
         
         # Разбираем части даты
         parts = date_string.split()
         if len(parts) < 2:
-            logging.warning(f"⚠️ Недостаточно частей в дате: {date_string}")
             return datetime.now()
         
         # Извлекаем день и время
         day_str = parts[0].strip()
         time_str = parts[-1].strip()
-        
-        # Определяем год хоккейного сезона (сезон обычно с августа по апрель)
-        current_date = datetime.now()
-        current_year = current_date.year
-        current_month = current_date.month
-        
-        # Хоккейный сезон: если сейчас с августа по декабрь - это текущий год
-        # если с января по июль - это следующий год для матчей после августа
-        season_year = current_year
         
         # Пытаемся найти месяц в строке
         month_found = None
@@ -74,66 +59,49 @@ def parse_match_date(date_string):
             if month_name in date_lower:
                 month_found = month_num
                 break
-                
+        
+        # Если месяц не нашли, используем текущий месяц
         if not month_found:
-            for month_short, month_num in months_ru_short.items():
-                if month_short in date_lower:
-                    month_found = month_num
-                    break
+            month_found = datetime.now().month
         
-        # Если месяц не нашли, используем текущий месяц как fallback
-        if not month_found:
-            logging.warning(f"⚠️ Не найден месяц в дате: {date_string}")
-            month_found = current_month
-        
-        # ЛОГИКА ОПРЕДЕЛЕНИЯ ГОДА ДЛЯ ХОККЕЙНОГО СЕЗОНА:
-        # Матчи обычно идут с сентября по апрель
-        # Если текущий месяц с января по июль, а матч с сентября по декабрь - это следующий год
-        # Если текущий месяц с августа по декабрь, а матч с января по июль - это следующий год
-        
-        if current_month >= 8:  # Август-Декабрь
-            if month_found >= 1 and month_found <= 7:  # Январь-Июль
-                season_year = current_year + 1
-            else:  # Август-Декабрь
-                season_year = current_year
-        else:  # Январь-Июль
-            if month_found >= 8:  # Август-Декабрь
-                season_year = current_year
-            else:  # Январь-Июль
-                season_year = current_year
+        # Парсим день
+        try:
+            day = int(day_str)
+        except:
+            day_match = re.search(r'(\d{1,2})', day_str)
+            day = int(day_match.group(1)) if day_match else 1
         
         # Парсим время
         try:
             if ':' in time_str:
                 hours, minutes = map(int, time_str.split(':'))
             else:
-                # Пытаемся извлечь время из строки регулярным выражением
                 time_match = re.search(r'(\d{1,2}):(\d{2})', time_str)
                 if time_match:
                     hours, minutes = int(time_match.group(1)), int(time_match.group(2))
                 else:
-                    hours, minutes = 19, 0  # время по умолчанию
+                    hours, minutes = 19, 0
         except:
             hours, minutes = 19, 0
         
-        # Парсим день
-        try:
-            day = int(day_str)
-        except:
-            # Пытаемся извлечь день регулярным выражением
-            day_match = re.search(r'(\d{1,2})', day_str)
-            if day_match:
-                day = int(day_match.group(1))
-            else:
-                day = 1
+        # ОПРЕДЕЛЕНИЕ ГОДА - УПРОЩЕННАЯ ЛОГИКА
+        current_date = datetime.now()
+        current_year = current_date.year
+        
+        # Если месяц матча меньше текущего месяца, значит это следующий год
+        # (для сезона который длится с осени до весны)
+        if month_found < current_date.month:
+            match_year = current_year + 1
+        else:
+            match_year = current_year
         
         # Создаем объект datetime
-        match_date = datetime(season_year, month_found, day, hours, minutes)
+        match_date = datetime(match_year, month_found, day, hours, minutes)
         
-        # Дополнительная проверка: если дата в прошлом более чем на 30 дней, 
-        # значит это следующий год (для случаев когда сезон переходит через год)
-        if match_date < current_date and (current_date - match_date).days > 30:
-            match_date = match_date.replace(year=season_year + 1)
+        # Дополнительная проверка: если дата в прошлом (более чем на 2 дня назад), 
+        # значит это следующий год
+        if match_date < current_date and (current_date - match_date).days > 2:
+            match_date = match_date.replace(year=match_year + 1)
             logging.info(f"🔄 Корректируем год для прошедшей даты: {match_date}")
         
         logging.info(f"✅ Дата распарсена: {match_date.strftime('%d.%m.%Y %H:%M')}")
@@ -144,7 +112,7 @@ def parse_match_date(date_string):
         return datetime.now()
 
 def format_beautiful_date(date_string):
-    """Красивое форматирование даты матча с правильным определением месяца и года"""
+    """Красивое форматирование даты матча"""
     try:
         # Парсим дату для получения корректного года
         parsed_date = parse_match_date(date_string)
@@ -168,41 +136,141 @@ def format_beautiful_date(date_string):
         logging.error(f"❌ Ошибка форматирования даты '{date_string}': {e}")
         return f"📅 {date_string}"
 
-# ========== ПРОВЕРКА КОРРЕКТНОСТИ РАСПИСАНИЯ ==========
+# ========== ДИАГНОСТИКА ОТПРАВКИ ==========
 
-def validate_schedule(matches):
-    """Проверка корректности расписания матчей"""
-    logging.info("🔍 Проверка корректности расписания...")
+async def test_send_to_admin():
+    """Тестовая отправка сообщения админу"""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        data = {
+            "chat_id": ADMIN_ID,
+            "text": "🔔 <b>ТЕСТ БОТА</b>\n\nБот запущен и работает! ✅",
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        response = requests.post(url, json=data, timeout=10)
+        if response.status_code == 200:
+            logging.info("✅ Тестовое сообщение отправлено админу")
+            return True
+        else:
+            logging.error(f"❌ Ошибка отправки теста: {response.text}")
+            return False
+    except Exception as e:
+        logging.error(f"❌ Ошибка тестовой отправки: {e}")
+        return False
+
+# ========== УЛУЧШЕННАЯ ОТПРАВКА ==========
+
+async def send_telegram_with_retry(text: str, max_retries=3):
+    """Улучшенная отправка сообщения с повторными попытками и детальным логированием"""
+    subscribers = load_subscribers()
     
-    # Группируем матчи по дате
-    matches_by_date = {}
+    if not subscribers:
+        logging.warning("⚠️ Нет подписчиков для отправки")
+        return
+    
+    logging.info(f"📤 Отправка уведомления {len(subscribers)} подписчикам: {subscribers}")
+    
+    successful_sends = 0
+    failed_sends = 0
+    
+    for chat_id in subscribers:
+        for attempt in range(max_retries):
+            try:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                data = {
+                    "chat_id": chat_id, 
+                    "text": text, 
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True
+                }
+                
+                logging.info(f"🔄 Попытка {attempt + 1} отправки для {chat_id}")
+                response = requests.post(url, json=data, timeout=15)
+                
+                if response.status_code == 200:
+                    logging.info(f"✅ Уведомление отправлено {chat_id}")
+                    successful_sends += 1
+                    break
+                else:
+                    error_data = response.json()
+                    error_msg = error_data.get('description', 'Unknown error')
+                    logging.warning(f"⚠️ Попытка {attempt + 1}/{max_retries} для {chat_id}: {error_msg}")
+                    
+                    # Если ошибка "chat not found" или "bot blocked", удаляем подписчика
+                    if "chat not found" in error_msg.lower() or "bot was blocked" in error_msg.lower():
+                        logging.warning(f"🗑 Удаляем недоступного подписчика: {chat_id}")
+                        remove_subscriber(chat_id)
+                        break
+                    
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2)
+                    else:
+                        logging.error(f"❌ Не удалось отправить {chat_id} после {max_retries} попыток")
+                        failed_sends += 1
+                        
+            except requests.exceptions.Timeout:
+                logging.warning(f"⏰ Таймаут попытки {attempt + 1} для {chat_id}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)
+                else:
+                    logging.error(f"❌ Таймаут отправки {chat_id} после {max_retries} попыток")
+                    failed_sends += 1
+                    
+            except Exception as e:
+                logging.warning(f"⚠️ Попытка {attempt + 1}/{max_retries} для {chat_id}: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)
+                else:
+                    logging.error(f"❌ Не удалось отправить {chat_id} после {max_retries} попыток: {e}")
+                    failed_sends += 1
+    
+    logging.info(f"📊 Итог отправки: ✅ {successful_sends} успешно, ❌ {failed_sends} ошибок")
+
+# ========== ПРОВЕРКА КОРРЕКТНОСТИ ДАННЫХ ==========
+
+def validate_matches(matches):
+    """Валидация данных матчей"""
+    logging.info("🔍 Проверка корректности данных матчей...")
+    
+    if not matches:
+        logging.warning("⚠️ Нет матчей для проверки")
+        return True
+    
+    # Проверяем дубликаты по дате и времени
+    date_groups = {}
     for match in matches:
-        date_key = match["parsed_date"].strftime('%Y-%m-%d')
-        if date_key not in matches_by_date:
-            matches_by_date[date_key] = []
-        matches_by_date[date_key].append(match)
+        date_key = match["parsed_date"].strftime('%Y-%m-%d %H:%M')
+        if date_key not in date_groups:
+            date_groups[date_key] = []
+        date_groups[date_key].append(match)
     
-    # Проверяем матчи в один день
-    issues = []
-    for date, day_matches in matches_by_date.items():
+    # Ищем конфликты
+    conflicts = []
+    for date_key, day_matches in date_groups.items():
         if len(day_matches) > 1:
-            # Проверяем, все ли матчи в один день домашние/выездные
-            home_games = [m for m in day_matches if m['title'].startswith('Динамо-Минск')]
-            away_games = [m for m in day_matches if not m['title'].startswith('Динамо-Минск')]
-            
-            if home_games and away_games:
-                issue = f"❌ В один день ({date}) есть и домашний и выездной матч!"
-                issues.append(issue)
-                logging.error(issue)
+            conflict_info = f"❌ Конфликт в {date_key}:"
+            for match in day_matches:
+                conflict_info += f"\n   - {match['title']}"
+            conflicts.append(conflict_info)
+            logging.error(conflict_info)
     
-    if issues:
-        logging.warning(f"⚠️ Обнаружены проблемы в расписании: {len(issues)}")
-        for issue in issues:
-            logging.warning(f"   {issue}")
+    # Проверяем годы матчей
+    current_year = datetime.now().year
+    future_matches = [m for m in matches if m["parsed_date"].year > current_year + 1]
+    if future_matches:
+        logging.warning(f"⚠️ Найдены матчи с годом > {current_year + 1}")
+        for match in future_matches[:3]:  # Показываем первые 3
+            logging.warning(f"   - {match['parsed_date'].year}: {match['title']}")
     
-    return len(issues) == 0
+    if conflicts:
+        logging.error(f"🚨 Обнаружены конфликты в расписании: {len(conflicts)}")
+        return False
+    
+    logging.info("✅ Данные матчей корректны")
+    return True
 
-# ========== ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ ==========
+# ========== ОСТАЛЬНОЙ КОД ==========
 
 def setup_webhook():
     """Настройка webhook для Telegram"""
@@ -335,6 +403,7 @@ def debug():
             <p><b>ADMIN_ID:</b> {ADMIN_ID}</p>
             <hr>
             <p><a href="/test_send_all">📤 Тестовая отправка всем</a></p>
+            <p><a href="/test_admin">🧪 Тест админу</a></p>
             <p><a href="/setup_webhook">🔄 Настроить Webhook</a></p>
             <p><a href="/check_bot">🔍 Проверить бота</a></p>
         </body>
@@ -345,6 +414,7 @@ def debug():
 
 @app.route('/test_send_all')
 def test_send_all():
+    """Тестовая отправка всем подписчикам"""
     subscribers = load_subscribers()
     results = []
     
@@ -361,11 +431,23 @@ def test_send_all():
             if response.status_code == 200:
                 results.append(f"✅ {chat_id}: Успешно")
             else:
-                results.append(f"❌ {chat_id}: Ошибка {response.status_code} - {response.text}")
+                error_msg = response.json().get('description', 'Unknown error')
+                results.append(f"❌ {chat_id}: Ошибка {response.status_code} - {error_msg}")
         except Exception as e:
             results.append(f"❌ {chat_id}: Исключение - {e}")
     
     return "<br>".join(results)
+
+@app.route('/test_admin')
+def test_admin():
+    """Тестовая отправка только админу"""
+    def send_test():
+        asyncio.run(test_send_to_admin())
+    
+    thread = Thread(target=send_test)
+    thread.start()
+    
+    return "🧪 Тестовое сообщение отправляется админу... <a href='/debug'>Назад</a>"
 
 @app.route('/setup_webhook')
 def setup_webhook_route():
@@ -525,41 +607,6 @@ def remove_subscriber(chat_id):
         logging.error(f"❌ Ошибка удаления подписчика: {e}")
         return False
 
-async def send_telegram_with_retry(text: str, max_retries=3):
-    subscribers = load_subscribers()
-    logging.info(f"📤 Отправка уведомления {len(subscribers)} подписчикам")
-    
-    for chat_id in subscribers:
-        for attempt in range(max_retries):
-            try:
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                data = {
-                    "chat_id": chat_id, 
-                    "text": text, 
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": True
-                }
-                response = requests.post(url, json=data, timeout=10)
-                
-                if response.status_code == 200:
-                    logging.info(f"✅ Уведомление отправлено {chat_id}")
-                    break
-                else:
-                    error_msg = response.json().get('description', 'Unknown error')
-                    logging.warning(f"⚠️ Попытка {attempt + 1}/{max_retries} для {chat_id}: {error_msg}")
-                    
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(2)
-                    else:
-                        logging.error(f"❌ Не удалось отправить {chat_id} после {max_retries} попыток")
-                        
-            except Exception as e:
-                logging.warning(f"⚠️ Попытка {attempt + 1}/{max_retries} для {chat_id}: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2)
-                else:
-                    logging.error(f"❌ Не удалось отправить {chat_id} после {max_retries} попыток: {e}")
-
 async def fetch_matches():
     try:
         logging.info("🌍 Проверяем новые матчи...")
@@ -591,8 +638,8 @@ async def fetch_matches():
         # Сортировка по дате
         matches.sort(key=lambda x: x["parsed_date"])
         
-        # Проверка корректности расписания
-        validate_schedule(matches)
+        # Валидация данных
+        validate_matches(matches)
         
         logging.info(f"🎯 Найдено матчей: {len(matches)}")
         for match in matches:
@@ -608,8 +655,14 @@ async def monitor():
     logging.info("🚀 Запуск мониторинга")
     init_db()
     
+    # Настраиваем webhook
     setup_webhook()
+    
+    # Проверяем статус бота
     await check_bot_status()
+    
+    # Тестовая отправка админу
+    await test_send_to_admin()
     
     if ADMIN_ID not in load_subscribers():
         add_subscriber(ADMIN_ID, "admin")
@@ -641,23 +694,29 @@ async def monitor():
                 if added or removed:
                     logging.info(f"✨ Изменения: +{len(added)}, -{len(removed)}")
                     
+                    # Сначала отправляем уведомления о новых матчах
                     for match in new_matches:
                         if match["title"] in added:
                             msg = create_beautiful_message(match)
+                            logging.info(f"📨 Отправка уведомления: {match['title']}")
                             await send_telegram_with_retry(msg)
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(2)  # Увеличиваем паузу между сообщениями
                     
+                    # Затем уведомления об удаленных матчах
                     for match in old_matches:
                         if match["title"] in removed:
                             msg = create_removed_message(match)
+                            logging.info(f"📨 Отправка уведомления об удалении: {match['title']}")
                             await send_telegram_with_retry(msg)
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(2)
                     
+                    # Сохраняем новые матчи
                     try:
                         with open(STATE_FILE, "w", encoding="utf-8") as f:
                             save_matches = [{"title": m["title"], "date": m["date"], "url": m["url"]} 
                                           for m in new_matches]
                             json.dump(save_matches, f, ensure_ascii=False, indent=2)
+                            logging.info("💾 Состояние матчей сохранено")
                     except Exception as e:
                         logging.error(f"❌ Ошибка сохранения: {e}")
                     
