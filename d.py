@@ -6,8 +6,8 @@ import sqlite3
 import os
 from bs4 import BeautifulSoup
 from datetime import datetime
-from flask import Flask
-from threading import Thread  # ← ДОБАВИТЬ ЭТОТ ИМПОРТ
+from flask import Flask, request
+from threading import Thread
 import time
 
 # Конфигурация
@@ -118,42 +118,159 @@ def start_ping_service():
                 logging.error(f"❌ Ошибка авто-пинга: {e}")
             time.sleep(PING_INTERVAL)
     
-    ping_thread = Thread(target=ping_loop, daemon=True)  # ← Теперь Thread определен
+    ping_thread = Thread(target=ping_loop, daemon=True)
     ping_thread.start()
     logging.info("🔔 Служба авто-пинга запущена")
 
-# ========== ОСНОВНЫЕ ФУНКЦИИ ==========
+# ========== WEB ЭНДПОИНТЫ ДЛЯ ОТЛАДКИ ==========
 
 @app.route('/')
 def home():
-    subscribers = load_subscribers()
     return "🏒 Hockey Monitor Bot is running!"
 
 @app.route('/health')
 def health():
     return {"status": "running", "timestamp": datetime.now().isoformat()}
 
-@app.route('/status')
-def status():
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            matches = json.load(f)
-    except:
-        matches = []
-    
+@app.route('/debug')
+def debug():
+    """Страница отладки"""
     subscribers = load_subscribers()
     
+    html = f"""
+    <html>
+        <head><title>Debug Info</title><meta charset="utf-8"></head>
+        <body>
+            <h1>🏒 Debug Information</h1>
+            <h2>👥 Подписчики:</h2>
+            <ul>
+    """
+    
+    for sub in subscribers:
+        html += f"<li><b>{sub}</b> {'(ADMIN)' if sub == ADMIN_ID else ''}</li>"
+    
+    html += f"""
+            </ul>
+            <p><b>Всего подписчиков:</b> {len(subscribers)}</p>
+            <p><b>ADMIN_ID:</b> {ADMIN_ID}</p>
+            <hr>
+            <p><a href="/test_send_all">📤 Тестовая отправка всем</a></p>
+            <p><a href="/subscribers">📋 Список подписчиков (JSON)</a></p>
+        </body>
+    </html>
+    """
+    
+    return html
+
+@app.route('/test_send_all')
+def test_send_all():
+    """Тестовая отправка всем подписчикам"""
+    subscribers = load_subscribers()
+    results = []
+    
+    for chat_id in subscribers:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        data = {
+            "chat_id": chat_id,
+            "text": "🔔 <b>ТЕСТОВОЕ УВЕДОМЛЕНИЕ ДЛЯ ВСЕХ</b>\n\nБот работает! ✅",
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        try:
+            response = requests.post(url, json=data, timeout=10)
+            results.append(f"{chat_id}: {response.status_code}")
+        except Exception as e:
+            results.append(f"{chat_id}: Ошибка - {e}")
+    
+    return "<br>".join(results)
+
+@app.route('/subscribers')
+def list_subscribers():
+    """JSON список подписчиков"""
+    subscribers = load_subscribers()
     return {
-        "status": "active",
-        "current_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "total_matches": len(matches),
-        "subscribers_count": len(subscribers),
-        "auto_ping": "enabled"
+        "total_subscribers": len(subscribers),
+        "subscribers": subscribers
     }
 
-def run_web_server():
-    logging.info("🌐 Запуск веб-сервера на порту 5000...")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+@app.route('/add_subscriber/<chat_id>')
+def add_sub_manual(chat_id):
+    """Добавить подписчика вручную"""
+    if add_subscriber(chat_id, "manual"):
+        return f"✅ Подписчик {chat_id} добавлен. <a href='/debug'>Вернуться к отладке</a>"
+    return f"❌ Ошибка добавления {chat_id}"
+
+# ========== TELEGRAM WEBHOOK ==========
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Обработчик команд из Telegram"""
+    try:
+        data = request.get_json()
+        
+        if 'message' in data:
+            chat_id = str(data['message']['chat']['id'])
+            text = data['message'].get('text', '')
+            username = data['message']['chat'].get('username', '')
+            
+            logging.info(f"📨 Получено сообщение от {chat_id} ({username}): {text}")
+            
+            if text == '/start':
+                if add_subscriber(chat_id, username):
+                    send_telegram_sync(chat_id, 
+                        "✅ Вы подписались на уведомления о хоккейных матчах!\n\n"
+                        "Я буду присылать уведомления когда появятся новые матчи в продаже на hcdinamo.by"
+                    )
+                else:
+                    send_telegram_sync(chat_id, "ℹ️ Вы уже подписаны на уведомления")
+                    
+            elif text == '/stop':
+                if remove_subscriber(chat_id):
+                    send_telegram_sync(chat_id, "❌ Вы отписались от уведомлений")
+                else:
+                    send_telegram_sync(chat_id, "ℹ️ Вы не подписаны на уведомления")
+                    
+            elif text == '/status':
+                subscribers = load_subscribers()
+                if chat_id in subscribers:
+                    send_telegram_sync(chat_id, "✅ Вы подписаны на уведомления")
+                else:
+                    send_telegram_sync(chat_id, "❌ Вы не подписаны на уведомления")
+                    
+            elif text == '/debug':
+                subscribers = load_subscribers()
+                status = "✅ подписан" if chat_id in subscribers else "❌ не подписан"
+                send_telegram_sync(chat_id, 
+                    f"🔍 Информация:\n"
+                    f"ID: {chat_id}\n"
+                    f"Статус: {status}\n"
+                    f"Всего подписчиков: {len(subscribers)}"
+                )
+        
+        return 'OK'
+    except Exception as e:
+        logging.error(f"❌ Ошибка в webhook: {e}")
+        return 'ERROR'
+
+def send_telegram_sync(chat_id, text):
+    """Синхронная отправка сообщения в Telegram"""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        data = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        response = requests.post(url, json=data, timeout=10)
+        if response.status_code == 200:
+            logging.info(f"✅ Ответ отправлен {chat_id}")
+        else:
+            logging.error(f"❌ Ошибка отправки ответа: {response.text}")
+    except Exception as e:
+        logging.error(f"❌ Ошибка отправки ответа: {e}")
+
+# ========== ОСНОВНЫЕ ФУНКЦИИ ==========
 
 def init_db():
     conn = sqlite3.connect('subscribers.db')
@@ -185,6 +302,20 @@ def add_subscriber(chat_id, username=""):
         return True
     except Exception as e:
         logging.error(f"❌ Ошибка добавления подписчика: {e}")
+        return False
+
+def remove_subscriber(chat_id):
+    """Удаление подписчика"""
+    try:
+        conn = sqlite3.connect('subscribers.db')
+        c = conn.cursor()
+        c.execute("DELETE FROM subscribers WHERE chat_id = ?", (chat_id,))
+        conn.commit()
+        conn.close()
+        logging.info(f"✅ Удален подписчик: {chat_id}")
+        return True
+    except Exception as e:
+        logging.error(f"❌ Ошибка удаления подписчика: {e}")
         return False
 
 async def send_telegram(text: str):
@@ -299,6 +430,10 @@ async def monitor():
         except Exception as e:
             logging.error(f"Ошибка в цикле: {e}")
             await asyncio.sleep(60)
+
+def run_web_server():
+    logging.info("🌐 Запуск веб-сервера на порту 5000...")
+    app.run(host='0.0.0.0', port=5000, debug=False)
 
 def main():
     web_thread = Thread(target=run_web_server, daemon=True)
