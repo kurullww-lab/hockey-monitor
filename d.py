@@ -17,6 +17,7 @@ STATE_FILE = "matches_state.json"
 CHECK_INTERVAL = 300
 PING_INTERVAL = 240
 ADMIN_ID = "645388044"
+RENDER_URL = "https://hockey-monitor.onrender.com"  # Ваш URL на Render
 
 logging.basicConfig(
     level=logging.INFO, 
@@ -26,18 +27,61 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
+# ========== НАСТРОЙКА WEBHOOK ==========
+
+def setup_webhook():
+    """Настройка webhook для Telegram"""
+    try:
+        webhook_url = f"{RENDER_URL}/webhook"
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={webhook_url}"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            logging.info(f"✅ Webhook настроен: {webhook_url}")
+            return True
+        else:
+            logging.error(f"❌ Ошибка настройки webhook: {response.text}")
+            return False
+    except Exception as e:
+        logging.error(f"❌ Ошибка настройки webhook: {e}")
+        return False
+
+# ========== ДИАГНОСТИКА ==========
+
+async def check_bot_status():
+    """Проверка статуса бота и подписчиков"""
+    # Проверяем токен бота
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            bot_info = response.json()['result']
+            logging.info(f"✅ Бот активен: {bot_info['username']} ({bot_info['first_name']})")
+        else:
+            logging.error(f"❌ Неверный токен бота: {response.text}")
+            return False
+    except Exception as e:
+        logging.error(f"❌ Ошибка проверки бота: {e}")
+        return False
+    
+    # Проверяем подписчиков
+    subscribers = load_subscribers()
+    logging.info(f"👥 Всего подписчиков: {len(subscribers)}")
+    for sub in subscribers:
+        logging.info(f"   - {sub} {'(ADMIN)' if sub == ADMIN_ID else ''}")
+    
+    return True
+
 # ========== КРАСИВЫЕ УВЕДОМЛЕНИЯ ==========
 
 def format_beautiful_date(date_string):
     """Красивое форматирование даты матча"""
     try:
-        # Пример: "22 17:00" -> "22 октября 2025 17:00"
         parts = date_string.split()
         if len(parts) >= 2:
             day = parts[0]
             time = parts[1]
             
-            # Получаем текущий год и месяц
             current_year = datetime.now().year
             current_month = datetime.now().month
             months_ru = [
@@ -54,16 +98,13 @@ def format_beautiful_date(date_string):
         return f"📅 {date_string}"
 
 def create_beautiful_message(match):
-    """Создание красивого сообщения о матче"""
     beautiful_date = format_beautiful_date(match["date"])
     
-    # Разделяем название матча для лучшего отображения
     title = match['title']
     if ' — ' in title:
         home_team, away_team = title.split(' — ')
         formatted_title = f"🏒 {home_team} vs {away_team}"
         
-        # Определяем тип матча (домашний/выездной)
         if 'Динамо-Минск' in title:
             if title.startswith('Динамо-Минск'):
                 match_type = "🏠 Домашний матч"
@@ -86,7 +127,6 @@ def create_beautiful_message(match):
     return message
 
 def create_removed_message(match):
-    """Создание сообщения об удаленном матче"""
     beautiful_date = format_beautiful_date(match["date"])
     
     title = match['title']
@@ -107,12 +147,10 @@ def create_removed_message(match):
 # ========== АВТО-ПИНГ СИСТЕМА ==========
 
 def start_ping_service():
-    """Фоновая служба для пинга самого себя"""
     def ping_loop():
-        service_url = "https://hockey-monitor.onrender.com/health"
         while True:
             try:
-                response = requests.get(service_url, timeout=10)
+                response = requests.get(f"{RENDER_URL}/health", timeout=10)
                 logging.info(f"🏓 Авто-пинг: {response.status_code}")
             except Exception as e:
                 logging.error(f"❌ Ошибка авто-пинга: {e}")
@@ -122,7 +160,7 @@ def start_ping_service():
     ping_thread.start()
     logging.info("🔔 Служба авто-пинга запущена")
 
-# ========== WEB ЭНДПОИНТЫ ДЛЯ ОТЛАДКИ ==========
+# ========== WEB ЭНДПОИНТЫ ==========
 
 @app.route('/')
 def home():
@@ -134,7 +172,6 @@ def health():
 
 @app.route('/debug')
 def debug():
-    """Страница отладки"""
     subscribers = load_subscribers()
     
     html = f"""
@@ -142,7 +179,7 @@ def debug():
         <head><title>Debug Info</title><meta charset="utf-8"></head>
         <body>
             <h1>🏒 Debug Information</h1>
-            <h2>👥 Подписчики:</h2>
+            <h2>👥 Подписчики ({len(subscribers)}):</h2>
             <ul>
     """
     
@@ -151,11 +188,11 @@ def debug():
     
     html += f"""
             </ul>
-            <p><b>Всего подписчиков:</b> {len(subscribers)}</p>
             <p><b>ADMIN_ID:</b> {ADMIN_ID}</p>
             <hr>
             <p><a href="/test_send_all">📤 Тестовая отправка всем</a></p>
-            <p><a href="/subscribers">📋 Список подписчиков (JSON)</a></p>
+            <p><a href="/setup_webhook">🔄 Настроить Webhook</a></p>
+            <p><a href="/check_bot">🔍 Проверить бота</a></p>
         </body>
     </html>
     """
@@ -164,7 +201,7 @@ def debug():
 
 @app.route('/test_send_all')
 def test_send_all():
-    """Тестовая отправка всем подписчикам"""
+    """Тестовая отправка всем подписчикам с детальной информацией"""
     subscribers = load_subscribers()
     results = []
     
@@ -172,32 +209,59 @@ def test_send_all():
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         data = {
             "chat_id": chat_id,
-            "text": "🔔 <b>ТЕСТОВОЕ УВЕДОМЛЕНИЕ ДЛЯ ВСЕХ</b>\n\nБот работает! ✅",
+            "text": "🔔 <b>ТЕСТОВОЕ УВЕДОМЛЕНИЕ</b>\n\nЭто тестовое сообщение для проверки работы бота! ✅",
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }
         try:
             response = requests.post(url, json=data, timeout=10)
-            results.append(f"{chat_id}: {response.status_code}")
+            if response.status_code == 200:
+                results.append(f"✅ {chat_id}: Успешно")
+            else:
+                results.append(f"❌ {chat_id}: Ошибка {response.status_code} - {response.text}")
         except Exception as e:
-            results.append(f"{chat_id}: Ошибка - {e}")
+            results.append(f"❌ {chat_id}: Исключение - {e}")
     
     return "<br>".join(results)
 
-@app.route('/subscribers')
-def list_subscribers():
-    """JSON список подписчиков"""
-    subscribers = load_subscribers()
-    return {
-        "total_subscribers": len(subscribers),
-        "subscribers": subscribers
-    }
+@app.route('/setup_webhook')
+def setup_webhook_route():
+    """Настройка webhook через веб-интерфейс"""
+    if setup_webhook():
+        return "✅ Webhook настроен успешно! <a href='/debug'>Назад</a>"
+    else:
+        return "❌ Ошибка настройки webhook! <a href='/debug'>Назад</a>"
+
+@app.route('/check_bot')
+def check_bot_route():
+    """Проверка бота через веб-интерфейс"""
+    import threading
+    
+    def check():
+        asyncio.run(check_bot_status())
+    
+    thread = Thread(target=check)
+    thread.start()
+    
+    return "🔍 Проверка бота запущена, смотрите логи. <a href='/debug'>Назад</a>"
 
 @app.route('/add_subscriber/<chat_id>')
 def add_sub_manual(chat_id):
     """Добавить подписчика вручную"""
     if add_subscriber(chat_id, "manual"):
-        return f"✅ Подписчик {chat_id} добавлен. <a href='/debug'>Вернуться к отладке</a>"
+        # Отправляем тестовое сообщение новому подписчику
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        data = {
+            "chat_id": chat_id,
+            "text": "✅ Вы были добавлены в список подписчиков Hockey Monitor!",
+            "parse_mode": "HTML"
+        }
+        try:
+            requests.post(url, json=data, timeout=10)
+        except:
+            pass
+            
+        return f"✅ Подписчик {chat_id} добавлен и отправлено уведомление. <a href='/debug'>Назад</a>"
     return f"❌ Ошибка добавления {chat_id}"
 
 # ========== TELEGRAM WEBHOOK ==========
@@ -207,20 +271,24 @@ def webhook():
     """Обработчик команд из Telegram"""
     try:
         data = request.get_json()
+        logging.info(f"📨 Получен webhook: {json.dumps(data, ensure_ascii=False)}")
         
         if 'message' in data:
             chat_id = str(data['message']['chat']['id'])
             text = data['message'].get('text', '')
             username = data['message']['chat'].get('username', '')
+            first_name = data['message']['chat'].get('first_name', '')
             
-            logging.info(f"📨 Получено сообщение от {chat_id} ({username}): {text}")
+            logging.info(f"💬 Сообщение от {chat_id} ({username}): {text}")
             
             if text == '/start':
-                if add_subscriber(chat_id, username):
+                if add_subscriber(chat_id, username or first_name):
                     send_telegram_sync(chat_id, 
-                        "✅ Вы подписались на уведомления о хоккейных матчах!\n\n"
+                        f"✅ Привет, {first_name}!\n\n"
+                        "Вы подписались на уведомления о хоккейных матчах!\n\n"
                         "Я буду присылать уведомления когда появятся новые матчи в продаже на hcdinamo.by"
                     )
+                    logging.info(f"👤 Новый подписчик: {chat_id} ({username})")
                 else:
                     send_telegram_sync(chat_id, "ℹ️ Вы уже подписаны на уведомления")
                     
@@ -241,10 +309,18 @@ def webhook():
                 subscribers = load_subscribers()
                 status = "✅ подписан" if chat_id in subscribers else "❌ не подписан"
                 send_telegram_sync(chat_id, 
-                    f"🔍 Информация:\n"
+                    f"🔍 Ваша информация:\n"
                     f"ID: {chat_id}\n"
                     f"Статус: {status}\n"
                     f"Всего подписчиков: {len(subscribers)}"
+                )
+            else:
+                send_telegram_sync(chat_id, 
+                    "🤖 Команды бота:\n"
+                    "/start - Подписаться на уведомления\n"
+                    "/stop - Отписаться от уведомлений\n" 
+                    "/status - Статус подписки\n"
+                    "/debug - Информация о подписке"
                 )
         
         return 'OK'
@@ -266,9 +342,9 @@ def send_telegram_sync(chat_id, text):
         if response.status_code == 200:
             logging.info(f"✅ Ответ отправлен {chat_id}")
         else:
-            logging.error(f"❌ Ошибка отправки ответа: {response.text}")
+            logging.error(f"❌ Ошибка отправки ответа {chat_id}: {response.text}")
     except Exception as e:
-        logging.error(f"❌ Ошибка отправки ответа: {e}")
+        logging.error(f"❌ Ошибка отправки ответа {chat_id}: {e}")
 
 # ========== ОСНОВНЫЕ ФУНКЦИИ ==========
 
@@ -287,7 +363,8 @@ def load_subscribers():
         subscribers = [row[0] for row in c.fetchall()]
         conn.close()
         return subscribers
-    except:
+    except Exception as e:
+        logging.error(f"❌ Ошибка загрузки подписчиков: {e}")
         return []
 
 def add_subscriber(chat_id, username=""):
@@ -305,7 +382,6 @@ def add_subscriber(chat_id, username=""):
         return False
 
 def remove_subscriber(chat_id):
-    """Удаление подписчика"""
     try:
         conn = sqlite3.connect('subscribers.db')
         c = conn.cursor()
@@ -320,6 +396,8 @@ def remove_subscriber(chat_id):
 
 async def send_telegram(text: str):
     subscribers = load_subscribers()
+    logging.info(f"📤 Отправка уведомления {len(subscribers)} подписчикам: {subscribers}")
+    
     for chat_id in subscribers:
         try:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -371,6 +449,12 @@ async def fetch_matches():
 async def monitor():
     logging.info("🚀 Запуск мониторинга")
     init_db()
+    
+    # Настраиваем webhook
+    setup_webhook()
+    
+    # Проверяем статус бота
+    await check_bot_status()
     
     if ADMIN_ID not in load_subscribers():
         add_subscriber(ADMIN_ID, "admin")
