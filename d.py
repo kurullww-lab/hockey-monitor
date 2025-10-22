@@ -10,6 +10,7 @@ from flask import Flask, request
 from threading import Thread
 import time
 import re
+import hashlib
 
 # Конфигурация
 URL = "https://hcdinamo.by/tickets/"
@@ -28,7 +29,85 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
-# ========== УЛУЧШЕННЫЙ ПАРСИНГ ==========
+# ========== ИСПРАВЛЕННЫЙ ПАРСИНГ БЕЗ ДУБЛИКАТОВ ==========
+
+def get_match_hash(match_data):
+    """Создает хеш для уникальной идентификации матча"""
+    match_string = f"{match_data['title']}_{match_data['date']}"
+    return hashlib.md5(match_string.encode()).hexdigest()
+
+async def fetch_matches():
+    """Улучшенный парсинг матчей без дубликатов"""
+    try:
+        logging.info("🌍 Проверяем новые матчи...")
+        response = requests.get(URL, timeout=30, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        matches = []
+        seen_hashes = set()
+        
+        # Используем только основной селектор
+        match_items = soup.select("a.match-item")
+        logging.info(f"🎯 Найдено элементов a.match-item: {len(match_items)}")
+        
+        for item in match_items:
+            try:
+                title_elem = item.select_one("div.match-title")
+                date_elem = item.select_one("div.match-day")
+                time_elem = item.select_one("div.match-times")
+                
+                if title_elem and date_elem:
+                    title = title_elem.get_text(strip=True)
+                    date_text = date_elem.get_text(strip=True)
+                    time_text = time_elem.get_text(strip=True) if time_elem else "19:00"
+                    
+                    # Пропускаем некорректные данные
+                    if not title or title == "ВЫБРАТЬ МЕСТО":
+                        continue
+                    
+                    # Получаем ссылку
+                    href = item.get('href', '')
+                    if href.startswith('/'):
+                        href = "https://hcdinamo.by" + href
+                    elif not href:
+                        href = URL
+                    
+                    match_data = {
+                        "title": title,
+                        "date": f"{date_text} {time_text}",
+                        "url": href
+                    }
+                    
+                    # Проверяем уникальность матча
+                    match_hash = get_match_hash(match_data)
+                    if match_hash in seen_hashes:
+                        logging.info(f"⚠️ Пропускаем дубликат: {title}")
+                        continue
+                    
+                    seen_hashes.add(match_hash)
+                    match_data["parsed_date"] = parse_match_date(match_data["date"])
+                    matches.append(match_data)
+                    logging.info(f"✅ Уникальный матч: {title} - {date_text} {time_text}")
+                    
+            except Exception as e:
+                logging.warning(f"⚠️ Ошибка парсинга элемента: {e}")
+                continue
+        
+        # Сортировка по дате
+        matches.sort(key=lambda x: x["parsed_date"])
+        
+        logging.info(f"🎯 Всего уникальных матчей: {len(matches)}")
+        for i, match in enumerate(matches, 1):
+            logging.info(f"   {i:2d}. {match['parsed_date'].strftime('%d.%m.%Y %H:%M')}: {match['title']}")
+        
+        return matches
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка парсинга: {e}")
+        return []
 
 def parse_match_date(date_string):
     """Парсинг даты матча"""
@@ -57,7 +136,6 @@ def parse_match_date(date_string):
                 break
         
         if not month_found:
-            # Если месяц не указан, определяем по логике
             try:
                 match_day = int(day_str)
                 current_date = datetime.now()
@@ -102,180 +180,87 @@ def parse_match_date(date_string):
         logging.error(f"❌ Ошибка парсинга даты '{date_string}': {e}")
         return datetime.now()
 
-async def fetch_matches():
-    """Улучшенный парсинг матчей с поиском по разным селекторам"""
+# ========== ИСПРАВЛЕННАЯ ЛОГИКА ОБНАРУЖЕНИЯ ИЗМЕНЕНИЙ ==========
+
+async def monitor():
+    logging.info("🚀 Запуск мониторинга")
+    init_db()
+    
+    setup_webhook()
+    await check_bot_status()
+    await test_send_to_admin()
+    
+    if ADMIN_ID not in load_subscribers():
+        add_subscriber(ADMIN_ID, "admin")
+        logging.info(f"✅ Автоматически подписан админ: {ADMIN_ID}")
+    
+    subscribers = load_subscribers()
+    logging.info(f"👥 Текущие подписчики: {subscribers}")
+    
     try:
-        logging.info("🌍 Проверяем новые матчи...")
-        response = requests.get(URL, timeout=30, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        })
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, "html.parser")
-        matches = []
-        
-        # Пробуем разные селекторы для поиска матчей
-        selectors = [
-            "a.match-item",
-            ".match-item",
-            ".ticket-item", 
-            ".game-card",
-            "[class*='match']",
-            "[class*='ticket']",
-            "[class*='game']"
-        ]
-        
-        all_match_elements = []
-        for selector in selectors:
-            elements = soup.select(selector)
-            if elements:
-                logging.info(f"🎯 Найдено элементов по селектору '{selector}': {len(elements)}")
-                all_match_elements.extend(elements)
-        
-        # Убираем дубликаты
-        seen_ids = set()
-        unique_elements = []
-        for elem in all_match_elements:
-            elem_id = id(elem)
-            if elem_id not in seen_ids:
-                seen_ids.add(elem_id)
-                unique_elements.append(elem)
-        
-        logging.info(f"📋 Всего уникальных элементов: {len(unique_elements)}")
-        
-        for item in unique_elements:
-            try:
-                # Пробуем разные селекторы для заголовка
-                title_selectors = [
-                    ".match-title", 
-                    ".game-title",
-                    ".team-names",
-                    ".title",
-                    "div:first-child"
-                ]
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            old_matches = json.load(f)
+    except:
+        old_matches = []
+    
+    logging.info(f"📂 Загружено предыдущих матчей: {len(old_matches)}")
+    
+    start_ping_service()
+    
+    while True:
+        try:
+            new_matches = await fetch_matches()
+            if new_matches:
+                # Используем хеши для сравнения вместо названий
+                old_hashes = {get_match_hash(m) for m in old_matches}
+                new_hashes = {get_match_hash(m) for m in new_matches}
                 
-                title_elem = None
-                for selector in title_selectors:
-                    title_elem = item.select_one(selector)
-                    if title_elem:
-                        break
+                added_hashes = new_hashes - old_hashes
+                removed_hashes = old_hashes - new_hashes
                 
-                # Пробуем разные селекторы для даты
-                date_selectors = [
-                    ".match-day",
-                    ".match-date", 
-                    ".game-date",
-                    ".date",
-                    "div:nth-child(2)"
-                ]
-                
-                date_elem = None
-                for selector in date_selectors:
-                    date_elem = item.select_one(selector)
-                    if date_elem:
-                        break
-                
-                # Пробуем разные селекторы для времени
-                time_selectors = [
-                    ".match-times",
-                    ".match-time",
-                    ".game-time", 
-                    ".time",
-                    "div:nth-child(3)"
-                ]
-                
-                time_elem = None
-                for selector in time_selectors:
-                    time_elem = item.select_one(selector)
-                    if time_elem:
-                        break
-                
-                if title_elem and date_elem:
-                    title = title_elem.get_text(strip=True)
-                    date_text = date_elem.get_text(strip=True)
-                    time_text = time_elem.get_text(strip=True) if time_elem else "19:00"
+                if added_hashes or removed_hashes:
+                    logging.info(f"✨ Изменения: +{len(added_hashes)}, -{len(removed_hashes)}")
                     
-                    # Получаем ссылку
-                    href = item.get('href', '')
-                    if href.startswith('/'):
-                        href = "https://hcdinamo.by" + href
-                    elif not href:
-                        href = URL
+                    # Отправляем уведомления только о новых матчах
+                    added_count = 0
+                    for match in new_matches:
+                        if get_match_hash(match) in added_hashes:
+                            msg = create_beautiful_message(match)
+                            logging.info(f"📨 Отправка уведомления: {match['title']}")
+                            await send_telegram_with_retry(msg)
+                            added_count += 1
+                            await asyncio.sleep(2)  # Пауза между сообщениями
                     
-                    # Пропускаем элементы без нормальных данных
-                    if not title or title == "ВЫБРАТЬ МЕСТО" or len(title) < 5:
-                        continue
+                    # Отправляем уведомления об удаленных матчах
+                    removed_count = 0
+                    for match in old_matches:
+                        if get_match_hash(match) in removed_hashes:
+                            msg = create_removed_message(match)
+                            logging.info(f"📨 Отправка уведомления об удалении: {match['title']}")
+                            await send_telegram_with_retry(msg)
+                            removed_count += 1
+                            await asyncio.sleep(2)
                     
-                    match_data = {
-                        "title": title,
-                        "date": f"{date_text} {time_text}",
-                        "url": href
-                    }
+                    logging.info(f"📨 Итог отправки: +{added_count} новых, -{removed_count} удаленных")
                     
-                    match_data["parsed_date"] = parse_match_date(match_data["date"])
-                    matches.append(match_data)
-                    logging.info(f"✅ Найден матч: {title} - {date_text} {time_text}")
+                    # Сохраняем новые матчи
+                    try:
+                        with open(STATE_FILE, "w", encoding="utf-8") as f:
+                            save_matches = [{"title": m["title"], "date": m["date"], "url": m["url"]} 
+                                          for m in new_matches]
+                            json.dump(save_matches, f, ensure_ascii=False, indent=2)
+                            logging.info("💾 Состояние матчей сохранено")
+                    except Exception as e:
+                        logging.error(f"❌ Ошибка сохранения: {e}")
                     
-            except Exception as e:
-                logging.warning(f"⚠️ Ошибка парсинга элемента: {e}")
-                continue
-        
-        # Сортировка по дате
-        matches.sort(key=lambda x: x["parsed_date"])
-        
-        logging.info(f"🎯 Всего найдено матчей: {len(matches)}")
-        for i, match in enumerate(matches, 1):
-            logging.info(f"   {i:2d}. {match['parsed_date'].strftime('%d.%m.%Y %H:%M')}: {match['title']}")
-        
-        return matches
-        
-    except Exception as e:
-        logging.error(f"❌ Ошибка парсинга: {e}")
-        return []
-
-# ========== ДОПОЛНИТЕЛЬНАЯ ДИАГНОСТИКА ==========
-
-@app.route('/check_matches')
-def check_matches_route():
-    """Ручная проверка матчей"""
-    def check():
-        async def check_async():
-            matches = await fetch_matches()
-            logging.info(f"🔍 Ручная проверка: найдено {len(matches)} матчей")
+                    old_matches = new_matches
+                else:
+                    logging.info("✅ Изменений нет")
             
-        asyncio.run(check_async())
-    
-    thread = Thread(target=check)
-    thread.start()
-    
-    return "🔍 Проверка матчей запущена, смотрите логи. <a href='/debug'>Назад</a>"
-
-@app.route('/view_html')
-def view_html():
-    """Просмотр HTML страницы для отладки"""
-    try:
-        response = requests.get(URL, timeout=30, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-        response.raise_for_status()
-        
-        # Сохраняем HTML для анализа
-        with open("debug_page.html", "w", encoding="utf-8") as f:
-            f.write(response.text)
-        
-        return f"""
-        <html>
-            <head><title>HTML Debug</title><meta charset="utf-8"></head>
-            <body>
-                <h1>HTML сохранен</h1>
-                <p>Размер HTML: {len(response.text)} символов</p>
-                <pre>{response.text[:2000]}...</pre>
-                <p><a href='/debug'>Назад</a></p>
-            </body>
-        </html>
-        """
-    except Exception as e:
-        return f"❌ Ошибка: {e}"
+            await asyncio.sleep(CHECK_INTERVAL)
+        except Exception as e:
+            logging.error(f"❌ Ошибка в цикле мониторинга: {e}")
+            await asyncio.sleep(60)
 
 # ========== ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ ==========
 
@@ -338,7 +323,7 @@ async def test_send_to_admin():
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         data = {
             "chat_id": ADMIN_ID,
-            "text": f"🔔 <b>ТЕСТ БОТА</b>\n\nБот запущен и работает! ✅\nТекущее время: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+            "text": f"🔔 <b>ТЕСТ БОТА - ИСПРАВЛЕН ДУБЛИКАТ</b>\n\nБот запущен и работает! ✅\nИсправлена проблема с дублированием уведомлений.\nТекущее время: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }
@@ -543,7 +528,6 @@ def debug():
             <p><a href="/test_send_all">📤 Тестовая отправка всем</a></p>
             <p><a href="/test_admin">🧪 Тест админу</a></p>
             <p><a href="/check_matches">🔍 Проверить матчи</a></p>
-            <p><a href="/view_html">📄 Просмотр HTML</a></p>
             <p><a href="/setup_webhook">🔄 Настроить Webhook</a></p>
             <p><a href="/check_bot">🤖 Проверить бота</a></p>
         </body>
@@ -586,6 +570,21 @@ def test_admin():
     thread.start()
     
     return "🧪 Тестовое сообщение отправляется админу... <a href='/debug'>Назад</a>"
+
+@app.route('/check_matches')
+def check_matches_route():
+    """Ручная проверка матчей"""
+    def check():
+        async def check_async():
+            matches = await fetch_matches()
+            logging.info(f"🔍 Ручная проверка: найдено {len(matches)} матчей")
+            
+        asyncio.run(check_async())
+    
+    thread = Thread(target=check)
+    thread.start()
+    
+    return "🔍 Проверка матчей запущена, смотрите логи. <a href='/debug'>Назад</a>"
 
 @app.route('/setup_webhook')
 def setup_webhook_route():
@@ -744,76 +743,6 @@ def remove_subscriber(chat_id):
     except Exception as e:
         logging.error(f"❌ Ошибка удаления подписчика: {e}")
         return False
-
-async def monitor():
-    logging.info("🚀 Запуск мониторинга")
-    init_db()
-    
-    setup_webhook()
-    await check_bot_status()
-    await test_send_to_admin()
-    
-    if ADMIN_ID not in load_subscribers():
-        add_subscriber(ADMIN_ID, "admin")
-        logging.info(f"✅ Автоматически подписан админ: {ADMIN_ID}")
-    
-    subscribers = load_subscribers()
-    logging.info(f"👥 Текущие подписчики: {subscribers}")
-    
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            old_matches = json.load(f)
-    except:
-        old_matches = []
-    
-    logging.info(f"📂 Загружено предыдущих матчей: {len(old_matches)}")
-    
-    start_ping_service()
-    
-    while True:
-        try:
-            new_matches = await fetch_matches()
-            if new_matches:
-                old_titles = {m["title"] for m in old_matches}
-                new_titles = {m["title"] for m in new_matches}
-                
-                added = new_titles - old_titles
-                removed = old_titles - new_titles
-                
-                if added or removed:
-                    logging.info(f"✨ Изменения: +{len(added)}, -{len(removed)}")
-                    
-                    for match in new_matches:
-                        if match["title"] in added:
-                            msg = create_beautiful_message(match)
-                            logging.info(f"📨 Отправка уведомления: {match['title']}")
-                            await send_telegram_with_retry(msg)
-                            await asyncio.sleep(2)
-                    
-                    for match in old_matches:
-                        if match["title"] in removed:
-                            msg = create_removed_message(match)
-                            logging.info(f"📨 Отправка уведомления об удалении: {match['title']}")
-                            await send_telegram_with_retry(msg)
-                            await asyncio.sleep(2)
-                    
-                    try:
-                        with open(STATE_FILE, "w", encoding="utf-8") as f:
-                            save_matches = [{"title": m["title"], "date": m["date"], "url": m["url"]} 
-                                          for m in new_matches]
-                            json.dump(save_matches, f, ensure_ascii=False, indent=2)
-                            logging.info("💾 Состояние матчей сохранено")
-                    except Exception as e:
-                        logging.error(f"❌ Ошибка сохранения: {e}")
-                    
-                    old_matches = new_matches
-                else:
-                    logging.info("✅ Изменений нет")
-            
-            await asyncio.sleep(CHECK_INTERVAL)
-        except Exception as e:
-            logging.error(f"❌ Ошибка в цикле мониторинга: {e}")
-            await asyncio.sleep(60)
 
 def run_web_server():
     logging.info("🌐 Запуск веб-сервера на порту 5000...")
