@@ -9,6 +9,7 @@ from datetime import datetime
 from playwright.async_api import async_playwright
 from flask import Flask
 import threading
+import time
 
 # Конфигурация
 URL = "https://hcdinamo.by/tickets/"
@@ -30,9 +31,20 @@ def home():
 def health():
     return {"status": "running", "service": "hockey-monitor"}
 
+@app.route('/ping')
+def ping():
+    return "pong"
+
 def run_web_server():
-    """Запускает веб-сервер"""
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    """Запускает веб-сервер и ждет пока он забиндится"""
+    logging.info("🌐 Запуск веб-сервера на порту 5000...")
+    
+    # Явно указываем порт и хост
+    from waitress import serve
+    serve(app, host='0.0.0.0', port=5000)
+    
+    # Или используем стандартный Flask (менее надежно)
+    # app.run(host='0.0.0.0', port=5000, debug=False)
 
 # ========== ОСНОВНЫЕ ФУНКЦИИ БОТА ==========
 
@@ -124,12 +136,15 @@ async def monitor():
 
 def main():
     """Главная функция - запускает и веб-сервер и бота"""
-    # Запускаем веб-сервер в отдельном потоке
+    # Сначала запускаем веб-сервер
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
+    
+    # Даем время веб-серверу запуститься
+    time.sleep(3)
     logging.info("🌐 Веб-сервер запущен на порту 5000")
     
-    # Запускаем бота
+    # Затем запускаем бота
     asyncio.run(monitor())
 
 if __name__ == "__main__":
