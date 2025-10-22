@@ -166,7 +166,15 @@ async def fetch_with_playwright():
 async def monitor():
     logging.info("🚀 Запуск мониторинга")
     init_db()
-    old_matches = []
+    
+    # ЗАГРУЖАЕМ предыдущее состояние из файла
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            old_matches = json.load(f)
+    except:
+        old_matches = []
+    
+    logging.info(f"📂 Загружено предыдущих матчей: {len(old_matches)}")
     
     while True:
         try:
@@ -174,15 +182,30 @@ async def monitor():
             if new_matches:
                 old_titles = {m["title"] for m in old_matches}
                 new_titles = {m["title"] for m in new_matches}
+                
                 added = new_titles - old_titles
+                removed = old_titles - new_titles
                 
-                for m in new_matches:
-                    if m["title"] in added:
-                        msg = f"🎉 НОВЫЙ МАТЧ!\n\n🏒 {m['title']}\n📅 {m['date']}\n\n🎟 <a href='{m['url']}'>Купить билеты</a>"
-                        await send_telegram(msg)
-                        await asyncio.sleep(1)
-                
-                old_matches = new_matches
+                if added or removed:
+                    logging.info(f"✨ Изменения: +{len(added)}, -{len(removed)}")
+                    
+                    # Отправляем уведомления о новых матчах
+                    for m in new_matches:
+                        if m["title"] in added:
+                            msg = f"🎉 НОВЫЙ МАТЧ!\n\n🏒 {m['title']}\n📅 {m['date']}\n\n🎟 <a href='{m['url']}'>Купить билеты</a>"
+                            await send_telegram(msg)
+                            await asyncio.sleep(1)
+                    
+                    # СОХРАНЯЕМ новое состояние
+                    try:
+                        with open(STATE_FILE, "w", encoding="utf-8") as f:
+                            json.dump(new_matches, f, ensure_ascii=False, indent=2)
+                    except Exception as e:
+                        logging.error(f"❌ Ошибка сохранения: {e}")
+                    
+                    old_matches = new_matches
+                else:
+                    logging.info("✅ Изменений нет")
             
             await asyncio.sleep(CHECK_INTERVAL)
         except Exception as e:
