@@ -79,11 +79,19 @@ async def send_telegram(text: str):
 async def fetch_matches():
     for attempt in range(3):
         try:
+            logging.info(f"🌍 Загрузка страницы (попытка {attempt + 1}/3)...")
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+                # Увеличиваем таймауты
+                browser = await p.chromium.launch(
+                    headless=True, 
+                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+                )
                 page = await browser.new_page()
-                await page.goto(URL, timeout=45000)
-                await page.wait_for_selector("div.match-list", timeout=20000)
+                
+                # Увеличиваем таймаут до 60 секунд и используем networkidle
+                await page.goto(URL, timeout=60000, wait_until="networkidle")
+                await page.wait_for_selector("div.match-list", timeout=30000)
+
                 html = await page.content()
                 await browser.close()
 
@@ -102,11 +110,16 @@ async def fetch_matches():
                         "date": f"{date.text.strip()} {time.text.strip()}",
                         "url": href
                     })
+            
+            logging.info(f"🎯 Найдено матчей: {len(matches)}")
             return matches
+            
         except Exception as e:
-            logging.error(f"Ошибка парсинга: {e}")
-            await asyncio.sleep(5)
-    return []
+            logging.error(f"❌ Ошибка парсинга (попытка {attempt + 1}): {e}")
+            await asyncio.sleep(10)  # Увеличиваем паузу между попытками
+    
+    logging.error("🚫 Не удалось получить данные после 3 попыток")
+    return []  # Возвращаем пустой список вместо None
 
 async def monitor():
     logging.info("🚀 Запуск мониторинга")
