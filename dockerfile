@@ -1,10 +1,4 @@
-FROM python:3.9-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY . .
-
-CMD ["python", "app.py"]
+aiogram==3.22.0
+Flask==3.0.3
+requests==2.32.3
+beautifulsoup4==4.12.3
