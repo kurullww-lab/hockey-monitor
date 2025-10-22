@@ -17,7 +17,7 @@ STATE_FILE = "matches_state.json"
 CHECK_INTERVAL = 300
 PING_INTERVAL = 240
 ADMIN_ID = "645388044"
-RENDER_URL = "https://hockey-monitor.onrender.com"  # Ваш URL на Render
+RENDER_URL = "https://hockey-monitor.onrender.com"
 
 logging.basicConfig(
     level=logging.INFO, 
@@ -75,36 +75,98 @@ async def check_bot_status():
 # ========== КРАСИВЫЕ УВЕДОМЛЕНИЯ ==========
 
 def format_beautiful_date(date_string):
-    """Красивое форматирование даты матча"""
+    """Красивое форматирование даты матча с правильным определением месяца"""
     try:
+        logging.info(f"🔧 Форматируем дату: '{date_string}'")
+        
+        months_ru = [
+            'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+            'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
+        ]
+        
+        months_ru_short = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 
+                          'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+        
+        # Пытаемся найти месяц в строке
+        date_lower = date_string.lower()
+        
+        for i, month in enumerate(months_ru):
+            if month in date_lower:
+                # Нашли полное название месяца
+                parts = date_string.split()
+                day = parts[0] if parts else "?"
+                time = parts[-1] if len(parts) > 1 else "?"
+                current_year = datetime.now().year
+                
+                # Если месяц уже прошел в этом году, значит это следующий год
+                if i + 1 < datetime.now().month:
+                    current_year += 1
+                    
+                return f"🗓 {day} {month} {current_year} ⏰ {time}"
+        
+        # Пробуем короткие названия месяцев
+        for i, month_short in enumerate(months_ru_short):
+            if month_short in date_lower:
+                parts = date_string.split()
+                day = parts[0] if parts else "?"
+                time = parts[-1] if len(parts) > 1 else "?"
+                current_year = datetime.now().year
+                full_month = months_ru[i]
+                
+                if i + 1 < datetime.now().month:
+                    current_year += 1
+                    
+                return f"🗓 {day} {full_month} {current_year} ⏰ {time}"
+        
+        # Если месяц не указан, определяем логически
         parts = date_string.split()
         if len(parts) >= 2:
-            day = parts[0]
+            day_str = parts[0]
             time = parts[1]
             
-            current_year = datetime.now().year
-            current_month = datetime.now().month
-            months_ru = [
-                'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-                'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
-            ]
-            month_name = months_ru[current_month - 1]
-            
-            return f"🗓 {day} {month_name} {current_year} ⏰ {time}"
+            try:
+                match_day = int(day_str)
+                now = datetime.now()
+                current_day = now.day
+                current_month = now.month
+                current_year = now.year
+                
+                if match_day < current_day:
+                    # Матч в следующем месяце
+                    match_month = current_month + 1
+                    if match_month > 12:
+                        match_month = 1
+                        current_year += 1
+                else:
+                    # Матч в текущем месяце
+                    match_month = current_month
+                
+                if 1 <= match_month <= 12:
+                    month_name = months_ru[match_month - 1]
+                    return f"🗓 {day_str} {month_name} {current_year} ⏰ {time}"
+                    
+            except ValueError:
+                # Не удалось преобразовать день в число
+                pass
         
+        # Если ничего не помогло, возвращаем оригинальную строку
         return f"📅 {date_string}"
+        
     except Exception as e:
-        logging.error(f"❌ Ошибка форматирования даты: {e}")
+        logging.error(f"❌ Ошибка форматирования даты '{date_string}': {e}")
         return f"📅 {date_string}"
 
 def create_beautiful_message(match):
+    """Создание красивого сообщения о матче"""
     beautiful_date = format_beautiful_date(match["date"])
     
+    # Разделяем название матча для лучшего отображения
     title = match['title']
     if ' — ' in title:
         home_team, away_team = title.split(' — ')
         formatted_title = f"🏒 {home_team} vs {away_team}"
         
+        # Определяем тип матча (домашний/выездной)
         if 'Динамо-Минск' in title:
             if title.startswith('Динамо-Минск'):
                 match_type = "🏠 Домашний матч"
@@ -127,6 +189,7 @@ def create_beautiful_message(match):
     return message
 
 def create_removed_message(match):
+    """Создание сообщения об удаленном матче"""
     beautiful_date = format_beautiful_date(match["date"])
     
     title = match['title']
@@ -433,6 +496,10 @@ async def fetch_matches():
                 href = item.get("href", URL)
                 if href.startswith("/"):
                     href = "https://hcdinamo.by" + href
+                
+                # Логируем сырые данные для отладки
+                logging.info(f"📋 Сырые данные: '{date.text.strip()}' '{time.text.strip()}'")
+                
                 matches.append({
                     "title": title.text.strip(),
                     "date": f"{date.text.strip()} {time.text.strip()}",
