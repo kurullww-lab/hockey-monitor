@@ -77,6 +77,16 @@ async def send_telegram(text: str):
             pass
 
 async def fetch_matches():
+    """Пробуем оба способа парсинга"""
+    # Сначала пробуем простой requests
+    matches = await fetch_with_requests()
+    if matches:
+        return matches
+    
+    # Если не получилось, пробуем Playwright
+    return await fetch_with_playwright()
+
+async def fetch_with_requests():
     """Попробуем простой HTTP запрос без браузера"""
     try:
         logging.info("🌍 Попытка загрузки через requests...")
@@ -107,13 +117,51 @@ async def fetch_matches():
     except Exception as e:
         logging.error(f"❌ Ошибка requests: {e}")
         return []
-            
+
+async def fetch_with_playwright():
+    """Парсинг через Playwright"""
+    for attempt in range(2):
+        try:
+            logging.info(f"🌍 Загрузка Playwright (попытка {attempt + 1}/2)...")
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+                )
+                page = await browser.new_page()
+                
+                # Используем domcontentloaded вместо networkidle
+                await page.goto(URL, timeout=30000, wait_until="domcontentloaded")
+                await page.wait_for_selector("div.match-list", timeout=15000)
+
+                html = await page.content()
+                await browser.close()
+
+                # парсинг как обычно
+                soup = BeautifulSoup(html, "html.parser")
+                matches = []
+                for item in soup.select("a.match-item"):
+                    title = item.select_one("div.match-title")
+                    date = item.select_one("div.match-day")
+                    time = item.select_one("div.match-times")
+                    if title and date and time:
+                        href = item.get("href", URL)
+                        if href.startswith("/"):
+                            href = "https://hcdinamo.by" + href
+                        matches.append({
+                            "title": title.text.strip(),
+                            "date": f"{date.text.strip()} {time.text.strip()}",
+                            "url": href
+                        })
+                
+                logging.info(f"🎯 Найдено матчей: {len(matches)}")
+                return matches
+                
         except Exception as e:
-            logging.error(f"❌ Ошибка парсинга (попытка {attempt + 1}): {e}")
-            await asyncio.sleep(10)  # Увеличиваем паузу между попытками
+            logging.error(f"❌ Ошибка Playwright (попытка {attempt + 1}): {e}")
+            await asyncio.sleep(5)
     
-    logging.error("🚫 Не удалось получить данные после 3 попыток")
-    return []  # Возвращаем пустой список вместо None
+    return []  # возвращаем пустой список
 
 async def monitor():
     logging.info("🚀 Запуск мониторинга")
