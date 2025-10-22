@@ -7,7 +7,7 @@ import os
 from bs4 import BeautifulSoup
 from datetime import datetime
 from flask import Flask
-import threading
+from threading import Thread  # ← ДОБАВИТЬ ЭТОТ ИМПОРТ
 import time
 
 # Конфигурация
@@ -118,7 +118,7 @@ def start_ping_service():
                 logging.error(f"❌ Ошибка авто-пинга: {e}")
             time.sleep(PING_INTERVAL)
     
-    ping_thread = Thread(target=ping_loop, daemon=True)
+    ping_thread = Thread(target=ping_loop, daemon=True)  # ← Теперь Thread определен
     ping_thread.start()
     logging.info("🔔 Служба авто-пинга запущена")
 
@@ -301,7 +301,7 @@ async def monitor():
             await asyncio.sleep(60)
 
 def main():
-    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread = Thread(target=run_web_server, daemon=True)
     web_thread.start()
     
     time.sleep(3)
