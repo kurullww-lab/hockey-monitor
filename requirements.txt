@@ -1,5 +1,4 @@
-playwright
-beautifulsoup4
-requests
-flask
-waitress
+aiogram==3.22.0
+Flask==3.0.3
+requests==2.32.3
+beautifulsoup4==4.12.3
