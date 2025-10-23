@@ -43,7 +43,6 @@ dp = Dispatcher()
 subscribers = set()
 last_matches = []
 
-# Словарь для преобразования сокращённых названий месяцев в полные
 # Словарь для месяцев
 MONTHS = {
     "янв": "января",
@@ -82,30 +81,33 @@ async def fetch_matches():
 
     matches = []
     for item in match_items:
-        # Извлекаем полную строку даты (предполагаем, что она в .match-date или подобном; если нет, проверьте селектор)
-        date_elem = item.select_one(".match-date") or item.select_one(".match-day")  # Адаптируйте селектор под реальный HTML
-        date_str = date_elem.get_text(strip=True) if date_elem else ""
-        
-        # Если отдельно day и month, комбинируем: date_str = f"{day} {month}"
-        # day = item.select_one(".match-day").get_text(strip=True)
-        # month = item.select_one(".match-month").get_text(strip=True)
-        # date_str = f"{day} {month}"
-
-        time_ = item.select_one(".match-times").get_text(strip=True)
-        title = item.select_one(".match-title").get_text(strip=True)
+        # Пробуем извлечь элементы даты
+        day_elem = item.select_one(".match-day")
+        month_elem = item.select_one(".match-month")
+        weekday_elem = item.select_one(".match-weekday")  # Проверьте, есть ли такой класс
+        time_elem = item.select_one(".match-times")
+        title_elem = item.select_one(".match-title")
         ticket = item.select_one(".btn.tickets-w_t")
         ticket_url = ticket.get("data-w_t") if ticket else None
 
-        # Парсим дату: ищем шаблон "ДД сокр_месяц, сокр_день_недели" (например, "28 ноя, пт")
-        match = re.match(r'^(\d{1,2})\s+([а-я]{3,})\s*,\s*([а-я]{2,})$', date_str.lower())
-        if match:
-            day, short_month, short_weekday = match.groups()
-            full_month = MONTHS.get(short_month, short_month.capitalize())
-            full_weekday = WEEKDAYS.get(short_weekday, short_weekday.capitalize())
-            date_formatted = f"{day} {full_month}, {full_weekday}"
-        else:
-            # Fallback, если парсинг не сработал
-            date_formatted = date_str
+        # Извлекаем текст, если элементы найдены
+        day = day_elem.get_text(strip=True) if day_elem else "?"
+        month = month_elem.get_text(strip=True).lower() if month_elem else "?"
+        weekday = weekday_elem.get_text(strip=True).lower() if weekday_elem else "?"
+        time_ = time_elem.get_text(strip=True) if time_elem else "?"
+        title = title_elem.get_text(strip=True) if title_elem else "?"
+
+        # Логируем сырые данные для отладки
+        logging.info(f"Raw date data: day={day}, month={month}, weekday={weekday}")
+
+        # Формируем строку даты
+        full_month = MONTHS.get(month, month.capitalize())  # Если месяц не в словаре, оставляем как есть
+        full_weekday = WEEKDAYS.get(weekday, weekday.capitalize()) if weekday else ""
+
+        # Собираем дату в нужном формате
+        date_formatted = f"{day} {full_month}" if day != "?" and month != "?" else "Дата неизвестна"
+        if full_weekday and weekday != "?":
+            date_formatted += f", {full_weekday}"
 
         msg = (
             f"📅 {date_formatted}\n"
