@@ -58,6 +58,17 @@ MONTHS = {
     "дек": "декабря"
 }
 
+# Словарь для преобразования сокращённых названий дней недели в полные
+WEEKDAYS = {
+    "пн": "Понедельник",
+    "вт": "Вторник",
+    "ср": "Среда",
+    "чт": "Четверг",
+    "пт": "Пятница",
+    "сб": "Суббота",
+    "вс": "Воскресенье"
+}
+
 async def fetch_matches():
     async with aiohttp.ClientSession() as session:
         async with session.get(URL) as resp:
@@ -70,17 +81,27 @@ async def fetch_matches():
     matches = []
     for item in match_items:
         day = item.select_one(".match-day").get_text(strip=True)
-        month = item.select_one(".match-month").get_text(strip=True).lower()  # Приводим к нижнему регистру
+        month = item.select_one(".match-month").get_text(strip=True).lower()
         time_ = item.select_one(".match-times").get_text(strip=True)
         title = item.select_one(".match-title").get_text(strip=True)
         ticket = item.select_one(".btn.tickets-w_t")
         ticket_url = ticket.get("data-w_t") if ticket else None
 
-        # Преобразуем сокращённый месяц в полный
-        full_month = MONTHS.get(month, month)  # Если месяц не найден, оставляем как есть
+        # Получаем день недели из HTML (предполагается, что он есть в данных)
+        weekday = item.select_one(".match-weekday")  # Замените на правильный селектор, если день недели есть
+        weekday_text = weekday.get_text(strip=True).lower() if weekday else ""
+
+        # Преобразуем сокращённый месяц и день недели в полные
+        full_month = MONTHS.get(month, month)
+        full_weekday = WEEKDAYS.get(weekday_text, weekday_text) if weekday_text else ""
+
+        # Формируем строку даты
+        date_str = f"{day} {full_month}"
+        if full_weekday:
+            date_str += f", {full_weekday}"
 
         msg = (
-            f"📅 {day} {full_month}\n"  # Используем полный месяц
+            f"📅 {date_str}\n"
             f"🏒 {title}\n"
             f"🕒 {time_}\n"
         )
