@@ -14,21 +14,17 @@ from flask import Flask
 # ==============================
 # 🔧 Настройки
 # ==============================
-# Используем правильное имя переменной
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Теперь берем из TELEGRAM_TOKEN
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Проверяем, что токен установлен
 if not BOT_TOKEN:
-    raise ValueError("❌ TELEGRAM_TOKEN environment variable is not set! Please check Render.com environment variables.")
+    raise ValueError("❌ TELEGRAM_TOKEN environment variable is not set!")
 
-# Используем другие переменные из окружения
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 300))  # 5 минут по умолчанию
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Опционально для тестов
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 300))
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 RENDER_URL = os.getenv("RENDER_URL", "https://hockey-monitor.onrender.com")
 
 MATCHES_URL = "https://hcdinamo.by/tickets/"
 
-# Словарь для преобразования месяцев
 MONTHS = {
     'янв': 'января', 'фев': 'февраля', 'мар': 'марта', 'апр': 'апреля',
     'май': 'мая', 'июн': 'июня', 'июл': 'июля', 'авг': 'августа',
@@ -38,9 +34,6 @@ MONTHS = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("hockey_monitor")
 
-# ==============================
-# 🚀 Flask Web Server
-# ==============================
 app = Flask(__name__)
 
 @app.route('/')
@@ -51,11 +44,7 @@ def index():
 def health():
     return "OK", 200
 
-# ==============================
-# 🤖 Telegram Bot
-# ==============================
 try:
-    # Новый синтаксис для aiogram 3.17.0+
     bot = Bot(
         token=BOT_TOKEN, 
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -67,7 +56,8 @@ except Exception as e:
     raise
 
 subscribers = set()
-last_matches = set()
+# ИЗМЕНЕНИЕ: храним полную информацию о матчах, а не только заголовки
+last_matches_dict = {}  # {match_id: match_data}
 
 # ==============================
 # 🏒 Парсер матчей
@@ -75,12 +65,9 @@ last_matches = set()
 def format_date(day, month, time):
     """Форматирует дату в красивый вид: 28 ноября, Пт 19:00"""
     try:
-        # Преобразуем месяц в полный формат
         month_lower = month.lower() if month else ''
         full_month = MONTHS.get(month_lower, month)
         
-        # Определяем день недели (если нужно)
-        # Пока используем существующий формат, но можно добавить определение дня недели
         if day and full_month and time:
             return f"{day} {full_month}, {time}"
         elif day and full_month:
@@ -108,15 +95,12 @@ def fetch_matches():
             time = match.select_one(".match-times")
             ticket_link = match.get("href")
 
-            # Формируем удобный текст
             title_text = title.get_text(strip=True) if title else "Без названия"
             
-            # Получаем текстовые значения
             day_text = date_day.get_text(strip=True) if date_day else None
             month_text = date_month.get_text(strip=True) if date_month else None
             time_text = time.get_text(strip=True) if time else None
             
-            # Форматируем дату
             date_text = format_date(day_text, month_text, time_text)
             
             if ticket_link:
@@ -124,11 +108,12 @@ def fetch_matches():
             else:
                 full_link = "https://hcdinamo.by/tickets/"
 
-            matches.append({
+            match_data = {
                 "title": title_text,
                 "date": date_text,
                 "link": full_link
-            })
+            }
+            matches.append(match_data)
 
         logger.info(f"🎯 Найдено матчей: {len(matches)}")
         return matches
@@ -159,48 +144,68 @@ async def cmd_start(message: types.Message):
     await message.answer(text)
 
 # ==============================
-# 🔁 Проверка обновлений
+# 🔁 Проверка обновлений (ИСПРАВЛЕННАЯ ЛОГИКА)
 # ==============================
 async def monitor_matches():
-    global last_matches
+    global last_matches_dict
     await asyncio.sleep(5)
 
     while True:
         try:
             logger.info("🔄 Проверка...")
-            matches = fetch_matches()
-            if not matches:
+            current_matches = fetch_matches()
+            
+            if not current_matches:
                 logger.info("❕ Нет матчей для отображения.")
             else:
-                current_set = {f"{m['title']}|{m['date']}" for m in matches}
+                # Создаем словарь текущих матчей для сравнения
+                current_dict = {f"{m['title']}|{m['date']}": m for m in current_matches}
+                current_keys = set(current_dict.keys())
+                last_keys = set(last_matches_dict.keys())
 
-                # Проверяем на изменения (новые или удалённые матчи)
-                if current_set != last_matches:
-                    added = current_set - last_matches
-                    removed = last_matches - current_set
-                    last_matches = current_set
+                # Находим изменения
+                added_keys = current_keys - last_keys
+                removed_keys = last_keys - current_keys
 
-                    if added or removed:
-                        text_parts = []
-                        if added:
-                            added_titles = [item.split('|')[0] for item in added]
-                            text_parts.append("➕ <b>Новые матчи:</b>\n" + "\n".join(f"🏒 {t}" for t in added_titles))
-                        if removed:
-                            removed_titles = [item.split('|')[0] for item in removed]
-                            text_parts.append("➖ <b>Удалённые матчи:</b>\n" + "\n".join(f"🚫 {t}" for t in removed_titles))
+                if added_keys or removed_keys:
+                    logger.info(f"📈 Обнаружены изменения: +{len(added_keys)}, -{len(removed_keys)}")
 
-                        if subscribers:
-                            for chat_id in list(subscribers):
-                                try:
-                                    await bot.send_message(chat_id, "\n\n".join(text_parts))
-                                except Exception as e:
-                                    logger.error(f"❌ Не удалось отправить сообщение {chat_id}: {e}")
-                                    subscribers.discard(chat_id)
-                            logger.info(f"📊 Уведомления отправлены: ✅ {len(subscribers)} подписчиков")
-                        else:
-                            logger.info("❕ Нет подписчиков для уведомления")
-                    else:
-                        logger.info("✅ Изменений нет")
+                    if subscribers:
+                        # ОТПРАВЛЯЕМ УВЕДОМЛЕНИЯ О НОВЫХ МАТЧАХ
+                        if added_keys:
+                            for key in added_keys:
+                                match_data = current_dict[key]
+                                message_text = f"➕ <b>Новый матч!</b>\n\n🏒 {match_data['title']}\n📅 {match_data['date']}\n\n🎫 Билеты уже в продаже!"
+                                
+                                for chat_id in list(subscribers):
+                                    try:
+                                        await bot.send_message(chat_id, message_text)
+                                        await asyncio.sleep(0.3)
+                                    except Exception as e:
+                                        logger.error(f"❌ Не удалось отправить сообщение {chat_id}: {e}")
+                                        subscribers.discard(chat_id)
+                            
+                            logger.info(f"📊 Уведомления о {len(added_keys)} новых матчах отправлены")
+
+                        # ОТПРАВЛЯЕМ УВЕДОМЛЕНИЯ О ПРОШЕДШИХ/ОТМЕНЕННЫХ МАТЧАХ
+                        if removed_keys:
+                            for key in removed_keys:
+                                match_data = last_matches_dict[key]
+                                message_text = f"➖ <b>Матч завершен/отменен</b>\n\n🏒 {match_data['title']}\n📅 {match_data['date']}\n\nℹ️ Матч больше не доступен для покупки билетов"
+                                
+                                for chat_id in list(subscribers):
+                                    try:
+                                        await bot.send_message(chat_id, message_text)
+                                        await asyncio.sleep(0.3)
+                                    except Exception as e:
+                                        logger.error(f"❌ Не удалось отправить сообщение {chat_id}: {e}")
+                                        subscribers.discard(chat_id)
+                            
+                            logger.info(f"📊 Уведомления о {len(removed_keys)} завершенных матчах отправлены")
+
+                    # ОБНОВЛЯЕМ КЭШ
+                    last_matches_dict = current_dict
+                    
                 else:
                     logger.info("✅ Изменений нет")
 
@@ -215,7 +220,7 @@ async def monitor_matches():
 # ==============================
 def keep_alive():
     """Отправляет запросы каждые 14 минут чтобы сервис не засыпал на Render.com"""
-    time.sleep(30)  # Ждем 30 секунд после старта
+    time.sleep(30)
     
     while True:
         try:
@@ -227,12 +232,8 @@ def keep_alive():
         except Exception as e:
             logger.error(f"❌ Keep-alive failed: {e}")
         
-        # Ждем 14 минут (840 секунд) - меньше чем 15 минут лимит Render.com
         time.sleep(840)
 
-# ==============================
-# 🚀 Запуск Flask + Bot
-# ==============================
 def run_flask():
     port = int(os.getenv("PORT", 10000))
     logger.info(f"🌐 Starting Flask server on port {port}")
@@ -240,25 +241,26 @@ def run_flask():
 
 async def main():
     try:
-        # Запускаем Keep-Alive в отдельном потоке
+        # ИНИЦИАЛИЗИРУЕМ ПЕРВЫЙ КЭШ
+        initial_matches = fetch_matches()
+        global last_matches_dict
+        last_matches_dict = {f"{m['title']}|{m['date']}": m for m in initial_matches}
+        logger.info(f"🎯 Инициализирован кэш с {len(last_matches_dict)} матчами")
+
         keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
         keep_alive_thread.start()
         logger.info("✅ Keep-alive thread started")
 
-        # Удаляем старый webhook (чтобы не было конфликтов с polling)
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("🌐 Webhook удалён, включен polling режим.")
 
-        # Запускаем Flask в отдельном потоке
         flask_thread = threading.Thread(target=run_flask, daemon=True)
         flask_thread.start()
         logger.info("✅ Flask server started")
 
-        # Запускаем мониторинг
         asyncio.create_task(monitor_matches())
         logger.info("✅ Match monitoring started")
 
-        # Запускаем бота
         logger.info("✅ Start polling")
         await dp.start_polling(bot)
 
