@@ -12,14 +12,18 @@ from flask import Flask
 # ==============================
 # 🔧 Настройки
 # ==============================
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Токен из Render env
+# Используем правильное имя переменной
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Теперь берем из TELEGRAM_TOKEN
 
 # Проверяем, что токен установлен
 if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN environment variable is not set! Please set it in Render.com environment variables.")
+    raise ValueError("❌ TELEGRAM_TOKEN environment variable is not set! Please check Render.com environment variables.")
+
+# Используем другие переменные из окружения
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 300))  # 5 минут по умолчанию
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Опционально для тестов
 
 MATCHES_URL = "https://hcdinamo.by/tickets/"
-CHECK_INTERVAL = 300  # каждые 5 минут
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("hockey_monitor")
