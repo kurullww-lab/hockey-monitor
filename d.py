@@ -56,8 +56,7 @@ except Exception as e:
     raise
 
 subscribers = set()
-# ИЗМЕНЕНИЕ: храним полную информацию о матчах, а не только заголовки
-last_matches_dict = {}  # {match_id: match_data}
+last_matches_dict = {}
 
 # ==============================
 # 🏒 Парсер матчей
@@ -101,6 +100,7 @@ def fetch_matches():
             month_text = date_month.get_text(strip=True) if date_month else None
             time_text = time.get_text(strip=True) if time else None
             
+            # ВАЖНО: используем format_date для преобразования месяца
             date_text = format_date(day_text, month_text, time_text)
             
             if ticket_link:
@@ -110,7 +110,7 @@ def fetch_matches():
 
             match_data = {
                 "title": title_text,
-                "date": date_text,
+                "date": date_text,  # Здесь уже будет "28 ноября, Пт, 19:00"
                 "link": full_link
             }
             matches.append(match_data)
@@ -129,7 +129,7 @@ async def cmd_start(message: types.Message):
     subscribers.add(message.chat.id)
     logger.info(f"📝 Новый подписчик: {message.chat.id}")
     
-    matches = fetch_matches()
+    matches = fetch_matches()  # Здесь уже используются полные названия месяцев
 
     if not matches:
         await message.answer("Вы подписаны на уведомления о матчах Динамо Минск!\n\nПока нет доступных матчей.\n🏒 Мониторинг запущен!")
@@ -144,7 +144,7 @@ async def cmd_start(message: types.Message):
     await message.answer(text)
 
 # ==============================
-# 🔁 Проверка обновлений (ИСПРАВЛЕННАЯ ЛОГИКА)
+# 🔁 Проверка обновлений
 # ==============================
 async def monitor_matches():
     global last_matches_dict
@@ -171,11 +171,11 @@ async def monitor_matches():
                     logger.info(f"📈 Обнаружены изменения: +{len(added_keys)}, -{len(removed_keys)}")
 
                     if subscribers:
-                        # ОТПРАВЛЯЕМ УВЕДОМЛЕНИЯ О НОВЫХ МАТЧАХ
+                        # ОТДЕЛЬНЫЕ СООБЩЕНИЯ ДЛЯ КАЖДОГО НОВОГО МАТЧА
                         if added_keys:
                             for key in added_keys:
                                 match_data = current_dict[key]
-                                message_text = f"➕ <b>Новый матч!</b>\n\n🏒 {match_data['title']}\n📅 {match_data['date']}\n\n🎫 Билеты уже в продаже!"
+                                message_text = f"➕ <b>Новый матч!</b>\n\n🏒 {match_data['title']}\n📅 {match_data['date']}\n\n🎫 <a href='{match_data['link']}'>Купить билет</a>"
                                 
                                 for chat_id in list(subscribers):
                                     try:
@@ -187,7 +187,7 @@ async def monitor_matches():
                             
                             logger.info(f"📊 Уведомления о {len(added_keys)} новых матчах отправлены")
 
-                        # ОТПРАВЛЯЕМ УВЕДОМЛЕНИЯ О ПРОШЕДШИХ/ОТМЕНЕННЫХ МАТЧАХ
+                        # ОТДЕЛЬНЫЕ СООБЩЕНИЯ ДЛЯ КАЖДОГО ПРОШЕДШЕГО/ОТМЕНЕННОГО МАТЧА
                         if removed_keys:
                             for key in removed_keys:
                                 match_data = last_matches_dict[key]
