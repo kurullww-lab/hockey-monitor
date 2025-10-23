@@ -25,12 +25,6 @@ RENDER_URL = os.getenv("RENDER_URL", "https://hockey-monitor.onrender.com")
 
 MATCHES_URL = "https://hcdinamo.by/tickets/"
 
-MONTHS = {
-    'янв': 'января', 'фев': 'февраля', 'мар': 'марта', 'апр': 'апреля',
-    'май': 'мая', 'июн': 'июня', 'июл': 'июля', 'авг': 'августа',
-    'сен': 'сентября', 'окт': 'октября', 'ноя': 'ноября', 'дек': 'декабря'
-}
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("hockey_monitor")
 
@@ -61,22 +55,6 @@ last_matches_dict = {}
 # ==============================
 # 🏒 Парсер матчей
 # ==============================
-def format_date(day, month, time):
-    """Форматирует дату в красивый вид: 28 ноября, Пт 19:00"""
-    try:
-        month_lower = month.lower() if month else ''
-        full_month = MONTHS.get(month_lower, month)
-        
-        if day and full_month and time:
-            return f"{day} {full_month}, {time}"
-        elif day and full_month:
-            return f"{day} {full_month}"
-        else:
-            return f"{day if day else '?'} {month if month else '?'} {time if time else '?'}"
-    except Exception as e:
-        logger.error(f"Ошибка форматирования даты: {e}")
-        return f"{day if day else '?'} {month if month else '?'} {time if time else '?'}"
-
 def fetch_matches():
     try:
         response = requests.get(MATCHES_URL, timeout=15)
@@ -100,8 +78,16 @@ def fetch_matches():
             month_text = date_month.get_text(strip=True) if date_month else None
             time_text = time.get_text(strip=True) if time else None
             
-            # ВАЖНО: используем format_date для преобразования месяца
-            date_text = format_date(day_text, month_text, time_text)
+            # ФОРМАТИРУЕМ ДАТУ: день + месяц + время
+            date_parts = []
+            if day_text:
+                date_parts.append(day_text)
+            if month_text:
+                date_parts.append(month_text)
+            if time_text:
+                date_parts.append(time_text)
+            
+            date_text = ", ".join(date_parts) if date_parts else "Дата не указана"
             
             if ticket_link:
                 full_link = ticket_link if ticket_link.startswith("http") else f"https://hcdinamo.by{ticket_link}"
@@ -110,7 +96,7 @@ def fetch_matches():
 
             match_data = {
                 "title": title_text,
-                "date": date_text,  # Здесь уже будет "28 ноября, Пт, 19:00"
+                "date": date_text,
                 "link": full_link
             }
             matches.append(match_data)
@@ -129,7 +115,7 @@ async def cmd_start(message: types.Message):
     subscribers.add(message.chat.id)
     logger.info(f"📝 Новый подписчик: {message.chat.id}")
     
-    matches = fetch_matches()  # Здесь уже используются полные названия месяцев
+    matches = fetch_matches()
 
     if not matches:
         await message.answer("Вы подписаны на уведомления о матчах Динамо Минск!\n\nПока нет доступных матчей.\n🏒 Мониторинг запущен!")
