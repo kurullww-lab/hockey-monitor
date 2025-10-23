@@ -15,6 +15,7 @@ import re
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 300))
 URL = "https://hcdinamo.by/tickets/"
+APP_URL = "https://hockey-monitor.onrender.com/version"  # URL для самопинга (минимальный endpoint)
 
 # === Логгирование ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -28,7 +29,7 @@ def index():
 
 @app.route('/version')
 def version():
-    return jsonify({"version": "2.3.2 - FIXED_PARALLEL_RUN"})
+    return jsonify({"version": "2.3.3 - FIXED_DATE_PARSING_AND_KEEP_AWAKE"})
 
 # === Telegram bot ===
 session = AiohttpSession()
@@ -96,13 +97,15 @@ async def fetch_matches():
         time_ = time_elem.get_text(strip=True) if time_elem else "?"
         title = title_elem.get_text(strip=True) if title_elem else "?"
 
-        # Логируем сырые данные
+        # Логируем сырые данные и сам HTML-элемент для отладки
         logging.info(f"Raw date data: day={day}, month_raw={month_raw}")
+        if month_elem:
+            logging.info(f"Raw HTML for month: {month_elem}")
 
-        # Разделяем месяц и день недели (например, "ноя, пт" -> "ноя" и "пт")
+        # Разделяем месяц и день недели
         month, weekday = "?", "?"
         if month_raw != "?":
-            # Проверяем, есть ли запятая и день недели
+            # Проверяем формат "ноя, пт" или просто "ноя"
             match = re.match(r'^([а-я]{3,4})(?:,\s*([а-я]{2}))?$', month_raw)
             if match:
                 month = match.group(1)  # Например, "ноя"
@@ -177,11 +180,24 @@ async def stop_cmd(message: types.Message):
     await message.answer("Вы отписались от уведомлений.")
     logging.info(f"❌ Пользователь {message.chat.id} отписался.")
 
+# === Функция для поддержания сервера awake ===
+async def keep_awake():
+    await asyncio.sleep(10)  # Задержка на старт
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(APP_URL) as resp:
+                    logging.info(f"Keep-awake ping: status {resp.status}")
+        except Exception as e:
+            logging.error(f"Keep-awake error: {e}")
+        await asyncio.sleep(840)  # 14 минут = 840 секунд
+
 # === Запуск aiogram и Flask параллельно ===
 async def run_aiogram():
     await bot.delete_webhook(drop_pending_updates=True)
     logging.info("🌐 Webhook удалён, включен polling режим.")
     asyncio.create_task(monitor_matches())
+    asyncio.create_task(keep_awake())  # Запускаем самопинг
     await dp.start_polling(bot)
 
 def run_flask():
