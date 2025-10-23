@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("hockey_monitor")
 
 # ОТЛАДОЧНАЯ ИНФОРМАЦИЯ О ВЕРСИИ
-CODE_VERSION = "2.0 - SEPARATE_MESSAGES_FULL_MONTHS"
+CODE_VERSION = "2.1 - FIXED_DATE_FORMATTING"
 logger.info(f"🔄 Загружена версия кода: {CODE_VERSION}")
 
 app = Flask(__name__)
@@ -63,6 +63,35 @@ last_matches_dict = {}
 # ==============================
 # 🏒 Парсер матчей
 # ==============================
+def format_date(day, month, time, day_of_week):
+    """Форматирует дату в красивый вид: 24 октября, Пт 19:00"""
+    try:
+        # Убираем лишние запятые и форматируем красиво
+        date_parts = []
+        
+        if day and month:
+            # Объединяем день и месяц: "24 октября"
+            date_parts.append(f"{day} {month}")
+        
+        if day_of_week:
+            date_parts.append(day_of_week)
+            
+        if time:
+            date_parts.append(time)
+        
+        # Собираем в формате: "24 октября, Пт 19:00"
+        if len(date_parts) >= 2:
+            # Первая часть: дата, остальные: день недели и время
+            main_date = date_parts[0]
+            other_parts = ", ".join(date_parts[1:])
+            return f"{main_date}, {other_parts}"
+        else:
+            return ", ".join(date_parts) if date_parts else "Дата не указана"
+            
+    except Exception as e:
+        logger.error(f"Ошибка форматирования даты: {e}")
+        return f"{day if day else '?'} {month if month else '?'} {time if time else '?'}"
+
 def fetch_matches():
     try:
         response = requests.get(MATCHES_URL, timeout=15)
@@ -89,16 +118,17 @@ def fetch_matches():
             # ОТЛАДКА: логируем что парсим
             logger.info(f"🔍 Матч {i+1}: день='{day_text}', месяц='{month_text}', время='{time_text}'")
             
-            # ФОРМАТИРУЕМ ДАТУ: день + месяц + время
-            date_parts = []
-            if day_text:
-                date_parts.append(day_text)
-            if month_text:
-                date_parts.append(month_text)
-            if time_text:
-                date_parts.append(time_text)
+            # ИСПРАВЛЕННОЕ ФОРМАТИРОВАНИЕ ДАТЫ
+            # Определяем день недели из существующего формата
+            day_of_week = None
+            if time_text and ',' in time_text:
+                # Если время в формате "Пт, 19:00", извлекаем день недели
+                time_parts = time_text.split(',')
+                if len(time_parts) == 2:
+                    day_of_week = time_parts[0].strip()
+                    time_text = time_parts[1].strip()
             
-            date_text = ", ".join(date_parts) if date_parts else "Дата не указана"
+            date_text = format_date(day_text, month_text, time_text, day_of_week)
             
             if ticket_link:
                 full_link = ticket_link if ticket_link.startswith("http") else f"https://hcdinamo.by{ticket_link}"
