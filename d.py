@@ -8,14 +8,10 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from flask import Flask
-from dotenv import load_dotenv
 
 # ==============================
 # 🔧 Настройки
 # ==============================
-# Загружаем переменные окружения
-load_dotenv()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")  # Токен из Render env
 
 # Проверяем, что токен установлен
