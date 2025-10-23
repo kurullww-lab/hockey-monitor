@@ -44,6 +44,7 @@ last_matches = []
 
 
 # === Парсинг матчей ===
+# === Парсинг матчей ===
 async def fetch_matches():
     async with aiohttp.ClientSession() as session:
         async with session.get(URL) as resp:
@@ -53,17 +54,34 @@ async def fetch_matches():
     match_items = soup.select("a.match-item")
     logging.info(f"🎯 Найдено матчей: {len(match_items)}")
 
+    # Словарь для расширения сокращённых месяцев
+    short_to_full_month = {
+        "янв": "января",
+        "фев": "февраля",
+        "мар": "марта",
+        "апр": "апреля",
+        "мая": "мая",        # не меняется
+        "июн": "июня",
+        "июл": "июля",
+        "авг": "августа",
+        "сен": "сентября",
+        "окт": "октября",
+        "ноя": "ноября",
+        "дек": "декабря",
+    }
+
     matches = []
     for item in match_items:
         day = item.select_one(".match-day").get_text(strip=True)
-        month = item.select_one(".match-month").get_text(strip=True)
+        month_short = item.select_one(".match-month").get_text(strip=True).lower()
+        month_full = short_to_full_month.get(month_short, month_short)  # если не найдено — оставить как есть
         time_ = item.select_one(".match-times").get_text(strip=True)
         title = item.select_one(".match-title").get_text(strip=True)
         ticket = item.select_one(".btn.tickets-w_t")
         ticket_url = ticket.get("data-w_t") if ticket else None
 
         msg = (
-            f"📅 {day} {month}\n"
+            f"📅 {day} {month_full}\n"
             f"🏒 {title}\n"
             f"🕒 {time_}\n"
         )
