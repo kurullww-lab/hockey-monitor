@@ -28,15 +28,23 @@ MATCHES_URL = "https://hcdinamo.by/tickets/"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("hockey_monitor")
 
+# ОТЛАДОЧНАЯ ИНФОРМАЦИЯ О ВЕРСИИ
+CODE_VERSION = "2.0 - SEPARATE_MESSAGES_FULL_MONTHS"
+logger.info(f"🔄 Загружена версия кода: {CODE_VERSION}")
+
 app = Flask(__name__)
 
 @app.route('/')
 def index():
-    return "✅ Hockey Monitor Bot is running!"
+    return f"✅ Hockey Monitor Bot is running! Version: {CODE_VERSION}"
 
 @app.route('/health')
 def health():
     return "OK", 200
+
+@app.route('/version')
+def version():
+    return f"Version: {CODE_VERSION}", 200
 
 try:
     bot = Bot(
@@ -65,7 +73,7 @@ def fetch_matches():
         match_elements = soup.select("a.match-item")
         logger.info(f"🎯 Найдено элементов a.match-item: {len(match_elements)}")
         
-        for match in match_elements:
+        for i, match in enumerate(match_elements):
             title = match.select_one(".match-title")
             date_day = match.select_one(".match-day")
             date_month = match.select_one(".match-month")
@@ -77,6 +85,9 @@ def fetch_matches():
             day_text = date_day.get_text(strip=True) if date_day else None
             month_text = date_month.get_text(strip=True) if date_month else None
             time_text = time.get_text(strip=True) if time else None
+            
+            # ОТЛАДКА: логируем что парсим
+            logger.info(f"🔍 Матч {i+1}: день='{day_text}', месяц='{month_text}', время='{time_text}'")
             
             # ФОРМАТИРУЕМ ДАТУ: день + месяц + время
             date_parts = []
@@ -121,7 +132,7 @@ async def cmd_start(message: types.Message):
         await message.answer("Вы подписаны на уведомления о матчах Динамо Минск!\n\nПока нет доступных матчей.\n🏒 Мониторинг запущен!")
         return
 
-    text_lines = ["Вы подписаны на уведомления о матчах Динамо Минск!\n\nДоступные матчи:"]
+    text_lines = [f"Вы подписаны на уведомления о матчах Динамо Минск! (v{CODE_VERSION})\n\nДоступные матчи:"]
     for m in matches:
         text_lines.append(f"📅 <b>{m['date']}</b>\n🏒 {m['title']}\n🎟 <a href='{m['link']}'>Купить билет</a>")
     text = "\n\n".join(text_lines)
@@ -159,6 +170,7 @@ async def monitor_matches():
                     if subscribers:
                         # ОТДЕЛЬНЫЕ СООБЩЕНИЯ ДЛЯ КАЖДОГО НОВОГО МАТЧА
                         if added_keys:
+                            logger.info(f"🎯 Отправляем {len(added_keys)} отдельных сообщений о новых матчах")
                             for key in added_keys:
                                 match_data = current_dict[key]
                                 message_text = f"➕ <b>Новый матч!</b>\n\n🏒 {match_data['title']}\n📅 {match_data['date']}\n\n🎫 <a href='{match_data['link']}'>Купить билет</a>"
@@ -166,6 +178,7 @@ async def monitor_matches():
                                 for chat_id in list(subscribers):
                                     try:
                                         await bot.send_message(chat_id, message_text)
+                                        logger.info(f"📤 Отправлено отдельное сообщение для матча: {match_data['title']}")
                                         await asyncio.sleep(0.3)
                                     except Exception as e:
                                         logger.error(f"❌ Не удалось отправить сообщение {chat_id}: {e}")
@@ -175,6 +188,7 @@ async def monitor_matches():
 
                         # ОТДЕЛЬНЫЕ СООБЩЕНИЯ ДЛЯ КАЖДОГО ПРОШЕДШЕГО/ОТМЕНЕННОГО МАТЧА
                         if removed_keys:
+                            logger.info(f"🎯 Отправляем {len(removed_keys)} отдельных сообщений об отмененных матчах")
                             for key in removed_keys:
                                 match_data = last_matches_dict[key]
                                 message_text = f"➖ <b>Матч завершен/отменен</b>\n\n🏒 {match_data['title']}\n📅 {match_data['date']}\n\nℹ️ Матч больше не доступен для покупки билетов"
@@ -182,6 +196,7 @@ async def monitor_matches():
                                 for chat_id in list(subscribers):
                                     try:
                                         await bot.send_message(chat_id, message_text)
+                                        logger.info(f"📤 Отправлено отдельное сообщение об отмене: {match_data['title']}")
                                         await asyncio.sleep(0.3)
                                     except Exception as e:
                                         logger.error(f"❌ Не удалось отправить сообщение {chat_id}: {e}")
@@ -210,9 +225,9 @@ def keep_alive():
     
     while True:
         try:
-            response = requests.get(f"{RENDER_URL}/health", timeout=10)
+            response = requests.get(f"{RENDER_URL}/version", timeout=10)
             if response.status_code == 200:
-                logger.info("🫀 Keep-alive request sent - service is awake")
+                logger.info(f"🫀 Keep-alive request sent - {response.text}")
             else:
                 logger.warning(f"🫀 Keep-alive got status: {response.status_code}")
         except Exception as e:
