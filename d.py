@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 from flask import Flask
 
 # ==============================
@@ -45,7 +46,11 @@ def health():
 # 🤖 Telegram Bot
 # ==============================
 try:
-    bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+    # Новый синтаксис для aiogram 3.17.0+
+    bot = Bot(
+        token=BOT_TOKEN, 
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     dp = Dispatcher()
     logger.info("✅ Bot initialized successfully")
 except Exception as e:
