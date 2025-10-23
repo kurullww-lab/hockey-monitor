@@ -8,11 +8,20 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from flask import Flask
+from dotenv import load_dotenv
 
 # ==============================
 # 🔧 Настройки
 # ==============================
+# Загружаем переменные окружения
+load_dotenv()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")  # Токен из Render env
+
+# Проверяем, что токен установлен
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN environment variable is not set! Please set it in Render.com environment variables.")
+
 MATCHES_URL = "https://hcdinamo.by/tickets/"
 CHECK_INTERVAL = 300  # каждые 5 минут
 
@@ -28,11 +37,20 @@ app = Flask(__name__)
 def index():
     return "✅ Hockey Monitor Bot is running!"
 
+@app.route('/health')
+def health():
+    return "OK", 200
+
 # ==============================
 # 🤖 Telegram Bot
 # ==============================
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
-dp = Dispatcher()
+try:
+    bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+    dp = Dispatcher()
+    logger.info("✅ Bot initialized successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to initialize bot: {e}")
+    raise
 
 subscribers = set()
 last_matches = set()
@@ -47,7 +65,10 @@ def fetch_matches():
         soup = BeautifulSoup(response.text, "html.parser")
 
         matches = []
-        for match in soup.select("a.match-item"):
+        match_elements = soup.select("a.match-item")
+        logger.info(f"🎯 Найдено элементов a.match-item: {len(match_elements)}")
+        
+        for match in match_elements:
             title = match.select_one(".match-title")
             date_day = match.select_one(".match-day")
             date_month = match.select_one(".match-month")
@@ -56,8 +77,12 @@ def fetch_matches():
 
             # Формируем удобный текст
             title_text = title.get_text(strip=True) if title else "Без названия"
-            date_text = f"{date_day.get_text(strip=True)} {date_month.get_text(strip=True)} {time.get_text(strip=True)}"
-            full_link = ticket_link if ticket_link.startswith("http") else f"https://hcdinamo.by{ticket_link}"
+            date_text = f"{date_day.get_text(strip=True) if date_day else '?'} {date_month.get_text(strip=True) if date_month else '?'} {time.get_text(strip=True) if time else '?'}"
+            
+            if ticket_link:
+                full_link = ticket_link if ticket_link.startswith("http") else f"https://hcdinamo.by{ticket_link}"
+            else:
+                full_link = "https://hcdinamo.by/tickets/"
 
             matches.append({
                 "title": title_text,
@@ -77,18 +102,21 @@ def fetch_matches():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     subscribers.add(message.chat.id)
+    logger.info(f"📝 Новый подписчик: {message.chat.id}")
+    
     matches = fetch_matches()
 
     if not matches:
         await message.answer("Вы подписаны на уведомления о матчах Динамо Минск!\n\nПока нет доступных матчей.\n🏒 Мониторинг запущен!")
         return
 
-    text_lines = []
+    text_lines = ["Вы подписаны на уведомления о матчах Динамо Минск!\n\nДоступные матчи:"]
     for m in matches:
         text_lines.append(f"📅 <b>{m['date']}</b>\n🏒 {m['title']}\n🎟 <a href='{m['link']}'>Купить билет</a>")
     text = "\n\n".join(text_lines)
+    text += "\n\n🏒 Мониторинг запущен! Вы будете получать уведомления о новых матчах."
 
-    await message.answer(f"Вы подписаны на уведомления о матчах Динамо Минск!\n\n{text}\n\n🏒 Мониторинг запущен!")
+    await message.answer(text)
 
 # ==============================
 # 🔁 Проверка обновлений
@@ -99,12 +127,12 @@ async def monitor_matches():
 
     while True:
         try:
-            logger.info("🔄 Проверка матчей...")
+            logger.info("🔄 Проверка...")
             matches = fetch_matches()
             if not matches:
                 logger.info("❕ Нет матчей для отображения.")
             else:
-                current_set = {m['title'] for m in matches}
+                current_set = {f"{m['title']}|{m['date']}" for m in matches}
 
                 # Проверяем на изменения (новые или удалённые матчи)
                 if current_set != last_matches:
@@ -112,22 +140,32 @@ async def monitor_matches():
                     removed = last_matches - current_set
                     last_matches = current_set
 
-                    text_parts = []
-                    if added:
-                        text_parts.append("➕ Новые матчи:\n" + "\n".join(f"🏒 {t}" for t in added))
-                    if removed:
-                        text_parts.append("➖ Удалённые матчи:\n" + "\n".join(f"🚫 {t}" for t in removed))
+                    if added or removed:
+                        text_parts = []
+                        if added:
+                            added_titles = [item.split('|')[0] for item in added]
+                            text_parts.append("➕ <b>Новые матчи:</b>\n" + "\n".join(f"🏒 {t}" for t in added_titles))
+                        if removed:
+                            removed_titles = [item.split('|')[0] for item in removed]
+                            text_parts.append("➖ <b>Удалённые матчи:</b>\n" + "\n".join(f"🚫 {t}" for t in removed_titles))
 
-                    if subscribers:
-                        for chat_id in subscribers:
-                            await bot.send_message(chat_id, "\n\n".join(text_parts))
-                        logger.info(f"📊 Итог отправки: ✅ {len(subscribers)}")
+                        if subscribers:
+                            for chat_id in list(subscribers):
+                                try:
+                                    await bot.send_message(chat_id, "\n\n".join(text_parts))
+                                except Exception as e:
+                                    logger.error(f"❌ Не удалось отправить сообщение {chat_id}: {e}")
+                                    subscribers.discard(chat_id)
+                            logger.info(f"📊 Уведомления отправлены: ✅ {len(subscribers)} подписчиков")
+                        else:
+                            logger.info("❕ Нет подписчиков для уведомления")
                     else:
-                        logger.info("❕ Нет подписчиков для уведомления.")
+                        logger.info("✅ Изменений нет")
                 else:
-                    logger.info("✅ Изменений нет.")
+                    logger.info("✅ Изменений нет")
+
         except Exception as e:
-            logger.error(f"Ошибка в monitor_matches: {e}")
+            logger.error(f"❌ Ошибка в monitor_matches: {e}")
 
         logger.info(f"⏰ Следующая проверка через {CHECK_INTERVAL // 60} мин.")
         await asyncio.sleep(CHECK_INTERVAL)
@@ -136,21 +174,33 @@ async def monitor_matches():
 # 🚀 Запуск Flask + Bot
 # ==============================
 def run_flask():
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    port = int(os.getenv("PORT", 10000))
+    logger.info(f"🌐 Starting Flask server on port {port}")
+    app.run(host="0.0.0.0", port=port)
 
 async def main():
-    # Удаляем старый webhook (чтобы не было конфликтов с polling)
-    await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("🌐 Webhook удалён, включен polling режим.")
+    try:
+        # Удаляем старый webhook (чтобы не было конфликтов с polling)
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("🌐 Webhook удалён, включен polling режим.")
 
-    # Запускаем Flask в отдельном потоке
-    threading.Thread(target=run_flask, daemon=True).start()
+        # Запускаем Flask в отдельном потоке
+        flask_thread = threading.Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        logger.info("✅ Flask server started")
 
-    # Запускаем мониторинг
-    asyncio.create_task(monitor_matches())
+        # Запускаем мониторинг
+        asyncio.create_task(monitor_matches())
+        logger.info("✅ Match monitoring started")
 
-    # Запускаем бота
-    await dp.start_polling(bot)
+        # Запускаем бота
+        logger.info("✅ Start polling")
+        await dp.start_polling(bot)
+
+    except Exception as e:
+        logger.error(f"❌ Fatal error in main: {e}")
+        raise
 
 if __name__ == "__main__":
+    logger.info("🚀 Starting Hockey Monitor Bot...")
     asyncio.run(main())
