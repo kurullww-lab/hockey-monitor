@@ -3,6 +3,7 @@ import logging
 import threading
 import os
 import requests
+import time
 from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -23,8 +24,16 @@ if not BOT_TOKEN:
 # Используем другие переменные из окружения
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 300))  # 5 минут по умолчанию
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Опционально для тестов
+RENDER_URL = os.getenv("RENDER_URL", "https://hockey-monitor.onrender.com")
 
 MATCHES_URL = "https://hcdinamo.by/tickets/"
+
+# Словарь для преобразования месяцев
+MONTHS = {
+    'янв': 'января', 'фев': 'февраля', 'мар': 'марта', 'апр': 'апреля',
+    'май': 'мая', 'июн': 'июня', 'июл': 'июля', 'авг': 'августа',
+    'сен': 'сентября', 'окт': 'октября', 'ноя': 'ноября', 'дек': 'декабря'
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("hockey_monitor")
@@ -63,6 +72,25 @@ last_matches = set()
 # ==============================
 # 🏒 Парсер матчей
 # ==============================
+def format_date(day, month, time):
+    """Форматирует дату в красивый вид: 28 ноября, Пт 19:00"""
+    try:
+        # Преобразуем месяц в полный формат
+        month_lower = month.lower() if month else ''
+        full_month = MONTHS.get(month_lower, month)
+        
+        # Определяем день недели (если нужно)
+        # Пока используем существующий формат, но можно добавить определение дня недели
+        if day and full_month and time:
+            return f"{day} {full_month}, {time}"
+        elif day and full_month:
+            return f"{day} {full_month}"
+        else:
+            return f"{day if day else '?'} {month if month else '?'} {time if time else '?'}"
+    except Exception as e:
+        logger.error(f"Ошибка форматирования даты: {e}")
+        return f"{day if day else '?'} {month if month else '?'} {time if time else '?'}"
+
 def fetch_matches():
     try:
         response = requests.get(MATCHES_URL, timeout=15)
@@ -82,7 +110,14 @@ def fetch_matches():
 
             # Формируем удобный текст
             title_text = title.get_text(strip=True) if title else "Без названия"
-            date_text = f"{date_day.get_text(strip=True) if date_day else '?'} {date_month.get_text(strip=True) if date_month else '?'} {time.get_text(strip=True) if time else '?'}"
+            
+            # Получаем текстовые значения
+            day_text = date_day.get_text(strip=True) if date_day else None
+            month_text = date_month.get_text(strip=True) if date_month else None
+            time_text = time.get_text(strip=True) if time else None
+            
+            # Форматируем дату
+            date_text = format_date(day_text, month_text, time_text)
             
             if ticket_link:
                 full_link = ticket_link if ticket_link.startswith("http") else f"https://hcdinamo.by{ticket_link}"
@@ -176,6 +211,26 @@ async def monitor_matches():
         await asyncio.sleep(CHECK_INTERVAL)
 
 # ==============================
+# 🫀 Keep-Alive механизм
+# ==============================
+def keep_alive():
+    """Отправляет запросы каждые 14 минут чтобы сервис не засыпал на Render.com"""
+    time.sleep(30)  # Ждем 30 секунд после старта
+    
+    while True:
+        try:
+            response = requests.get(f"{RENDER_URL}/health", timeout=10)
+            if response.status_code == 200:
+                logger.info("🫀 Keep-alive request sent - service is awake")
+            else:
+                logger.warning(f"🫀 Keep-alive got status: {response.status_code}")
+        except Exception as e:
+            logger.error(f"❌ Keep-alive failed: {e}")
+        
+        # Ждем 14 минут (840 секунд) - меньше чем 15 минут лимит Render.com
+        time.sleep(840)
+
+# ==============================
 # 🚀 Запуск Flask + Bot
 # ==============================
 def run_flask():
@@ -185,6 +240,11 @@ def run_flask():
 
 async def main():
     try:
+        # Запускаем Keep-Alive в отдельном потоке
+        keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+        keep_alive_thread.start()
+        logger.info("✅ Keep-alive thread started")
+
         # Удаляем старый webhook (чтобы не было конфликтов с polling)
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("🌐 Webhook удалён, включен polling режим.")
