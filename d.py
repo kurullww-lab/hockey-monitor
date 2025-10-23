@@ -7,6 +7,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.default import DefaultBotProperties
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify
 
@@ -31,11 +32,15 @@ def index():
 
 @app.route('/version')
 def version():
-    return jsonify({"version": "2.3 - SEPARATE_MESSAGES"})
+    return jsonify({"version": "2.3.1 - SEPARATE_MESSAGES_FIX"})
 
 # === Telegram bot ===
 session = AiohttpSession()
-bot = Bot(token=BOT_TOKEN, session=session, parse_mode=ParseMode.HTML)
+bot = Bot(
+    token=BOT_TOKEN,
+    session=session,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)  # ✅ исправлено под aiogram >= 3.7
+)
 dp = Dispatcher()
 
 # === Память подписчиков и матчей ===
@@ -124,8 +129,10 @@ async def start(message: types.Message):
     subscribers.add(chat_id)
     logging.info(f"📝 Новый подписчик: {chat_id}")
 
-    await message.answer("Вы подписаны на уведомления о матчах Динамо Минск!\n\n"
-                         "🏒 Мониторинг запущен! Вы будете получать уведомления о новых матчах.")
+    await message.answer(
+        "Вы подписаны на уведомления о матчах Динамо Минск!\n\n"
+        "🏒 Мониторинг запущен! Вы будете получать уведомления о новых матчах."
+    )
 
     matches = await fetch_matches()
     if matches:
