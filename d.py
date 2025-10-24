@@ -37,8 +37,9 @@ last_matches = set()
 
 # === Парсинг матчей ===
 async def fetch_matches():
+    ajax_url = "https://hcdinamo.by/local/ajax/tickets_list.php"
     async with aiohttp.ClientSession() as session:
-        async with session.get(URL) as resp:
+        async with session.get(ajax_url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
             html = await resp.text()
 
     soup = BeautifulSoup(html, 'html.parser')
@@ -47,17 +48,18 @@ async def fetch_matches():
 
     matches = set()
     for item in match_items:
-        day = item.select_one(".match-day").get_text(strip=True)
-        month = item.select_one(".match-month").get_text(strip=True)
-        time_ = item.select_one(".match-times").get_text(strip=True)
-        title = item.select_one(".match-title").get_text(strip=True)
-        ticket = item.select_one(".btn.tickets-w_t")
-        ticket_url = ticket.get("data-w_t") if ticket else None
-
-        match_text = f"{day} {month}, {time_} — {title}"
-        matches.add((match_text, ticket_url))
+        try:
+            day = item.select_one(".match-day").get_text(strip=True)
+            month = item.select_one(".match-month").get_text(strip=True)
+            time_ = item.select_one(".match-times").get_text(strip=True)
+            title = item.select_one(".match-title").get_text(strip=True)
+            ticket = item.select_one(".btn.tickets-w_t")
+            ticket_url = ticket.get("data-w_t") if ticket else None
+            match_text = f"{day} {month}, {time_} — {title}"
+            matches.add((match_text, ticket_url))
+        except Exception as e:
+            logging.warning(f"Ошибка парсинга матча: {e}")
     return matches
-
 
 # === Проверка изменений ===
 async def monitor_matches():
