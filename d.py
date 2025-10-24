@@ -54,7 +54,7 @@ async def fetch_matches():
         ticket = item.select_one(".btn.tickets-w_t")
         ticket_url = ticket.get("data-w_t") if ticket else None
 
-        match_text = f"{day} {month} {time_} | {title}"
+        match_text = f"{day} {month}, {time_} — {title}"
         matches.add((match_text, ticket_url))
     return matches
 
@@ -63,6 +63,7 @@ async def fetch_matches():
 async def monitor_matches():
     global last_matches
     await asyncio.sleep(5)
+    logging.info("🏁 Мониторинг матчей запущен!")
     while True:
         try:
             current = await fetch_matches()
@@ -104,7 +105,8 @@ async def notify_changes(added, removed):
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
     subscribers.add(message.chat.id)
-    await message.answer("Вы подписаны на уведомления о матчах Динамо Минск! 🏒")
+    await message.answer("✅ Вы подписаны на уведомления о матчах Динамо Минск! 🏒")
+
     matches = await fetch_matches()
     if matches:
         for match, ticket in matches:
@@ -119,10 +121,10 @@ async def start_cmd(message: types.Message):
 @dp.message(Command("stop"))
 async def stop_cmd(message: types.Message):
     subscribers.discard(message.chat.id)
-    await message.answer("Вы отписались от уведомлений.")
+    await message.answer("⛔ Вы отписались от уведомлений.")
 
 
-# === Flask → aiohttp webhook сервер ===
+# === Webhook сервер ===
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
     asyncio.create_task(monitor_matches())
@@ -134,8 +136,14 @@ async def on_shutdown(app):
     await bot.session.close()
 
 
+async def handle_root(request):
+    """Проверочный маршрут для Render и Telegram"""
+    return web.Response(text="✅ Hockey Monitor Bot is running")
+
+
 def main():
     app = web.Application()
+    app.router.add_get("/", handle_root)  # <-- вот это добавлено
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
 
