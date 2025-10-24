@@ -4,9 +4,10 @@ import logging
 import aiohttp
 from aiohttp import web
 from bs4 import BeautifulSoup
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import Command
 
 # === Настройки логирования ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -116,7 +117,7 @@ async def scheduler():
         await asyncio.sleep(CHECK_INTERVAL)
 
 # === Обработчики Telegram ===
-@dp.message(commands=["start"])
+@dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user_id = message.chat.id
     if user_id not in subscribers:
@@ -126,7 +127,7 @@ async def cmd_start(message: types.Message):
     else:
         await message.answer("Вы уже подписаны.")
 
-@dp.message(commands=["stop"])
+@dp.message(Command("stop"))
 async def cmd_stop(message: types.Message):
     user_id = message.chat.id
     if user_id in subscribers:
