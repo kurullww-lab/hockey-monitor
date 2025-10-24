@@ -37,14 +37,31 @@ last_matches = set()
 
 # === Парсинг матчей ===
 async def fetch_matches():
-    ajax_url = "https://hcdinamo.by/local/ajax/tickets_list.php"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(ajax_url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-            html = await resp.text()
+    import aiohttp
+    from bs4 import BeautifulSoup
+    import logging
 
-    soup = BeautifulSoup(html, 'html.parser')
+    ajax_url = "https://hcdinamo.by/local/ajax/tickets_list.php"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ru,en;q=0.9",
+        "Referer": "https://hcdinamo.by/tickets/",
+        "Connection": "keep-alive",
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(ajax_url, headers=headers) as resp:
+            html = await resp.text()
+            logging.info(f"📄 Статус загрузки {resp.status}, длина HTML: {len(html)} символов")
+
+    soup = BeautifulSoup(html, "html.parser")
     match_items = soup.select("a.match-item")
-    logging.info(f"🎯 Найдено матчей: {len(match_items)}")
+    logging.info(f"🎯 Найдено элементов a.match-item: {len(match_items)}")
 
     matches = set()
     for item in match_items:
@@ -53,13 +70,16 @@ async def fetch_matches():
             month = item.select_one(".match-month").get_text(strip=True)
             time_ = item.select_one(".match-times").get_text(strip=True)
             title = item.select_one(".match-title").get_text(strip=True)
-            ticket = item.select_one(".btn.tickets-w_t")
-            ticket_url = ticket.get("data-w_t") if ticket else None
+            ticket_btn = item.select_one(".btn.tickets-w_t")
+            ticket_url = ticket_btn["data-w_t"] if ticket_btn else None
+
             match_text = f"{day} {month}, {time_} — {title}"
             matches.add((match_text, ticket_url))
         except Exception as e:
             logging.warning(f"Ошибка парсинга матча: {e}")
+
     return matches
+
 
 # === Проверка изменений ===
 async def monitor_matches():
