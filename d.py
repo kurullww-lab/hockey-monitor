@@ -10,187 +10,127 @@ from aiogram.client.default import DefaultBotProperties
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify
 import re
+from datetime import datetime, timedelta
 
-# === Конфигурация ===
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 300))
-URL = "https://hcdinamo.by/tickets/"
+# ... (остальной код остается таким же до функции is_match_started)
 
-# === Логгирование ===
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# === Проверка, начался ли матч ===
+def is_match_started(match):
+    try:
+        # Получаем текущее время
+        now = datetime.now()
+        
+        # Парсим дату и время матча из информации
+        match_date_str = match["date"]
+        match_time_str = match["time"]
+        
+        logging.info(f"🔍 Анализируем матч: {match['title']}")
+        logging.info(f"📅 Дата матча: {match_date_str}")
+        logging.info(f"🕒 Время матча: {match_time_str}")
+        
+        # Пытаемся определить дату матча
+        match_date = parse_match_date(match_date_str, now)
+        if not match_date:
+            logging.warning(f"❌ Не удалось распарсить дату: {match_date_str}")
+            return False
+        
+        # Пытаемся определить время матча
+        match_time = parse_match_time(match_time_str)
+        if not match_time:
+            logging.warning(f"❌ Не удалось распарсить время: {match_time_str}")
+            return False
+        
+        # Комбинируем дату и время
+        match_datetime = datetime.combine(match_date, match_time)
+        
+        # Проверяем, находится ли матч в "окне начала" (текущее время ± 3 часа от времени матча)
+        time_diff = now - match_datetime
+        time_diff_hours = time_diff.total_seconds() / 3600
+        
+        logging.info(f"⏰ Время матча: {match_datetime}")
+        logging.info(f"⏰ Текущее время: {now}")
+        logging.info(f"📊 Разница: {time_diff_hours:.2f} часов")
+        
+        # Матч считается начавшимся, если он должен был начаться в последние 3 часа
+        # и еще не прошел день с начала
+        is_started = -1 <= time_diff_hours <= 24
+        
+        if is_started:
+            logging.info(f"🎯 Матч начался: {match['title']}")
+        else:
+            logging.info(f"💤 Матч не начался или уже давно прошел: {match['title']}")
+            
+        return is_started
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка при проверке начала матча {match['title']}: {e}")
+        return False
 
-# === Flask ===
-app = Flask(__name__)
+# === Парсинг даты матча ===
+def parse_match_date(date_str, current_date):
+    try:
+        # Примеры форматов: "15 ноября, Пятница", "15 ноября"
+        # Удаляем день недели если есть
+        date_clean = re.split(r',', date_str)[0].strip()
+        
+        # Ищем число и месяц
+        match = re.match(r'(\d{1,2})\s+([а-я]+)', date_clean)
+        if not match:
+            return None
+            
+        day = int(match.group(1))
+        month_name = match.group(2).lower()
+        
+        # Обратный словарь для месяцев
+        MONTHS_REVERSE = {
+            "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+            "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+            "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12
+        }
+        
+        month = MONTHS_REVERSE.get(month_name)
+        if not month:
+            return None
+        
+        # Пробуем текущий год
+        year = current_date.year
+        match_date = datetime(year, month, day).date()
+        
+        # Если дата матча в прошлом относительно текущей даты (но в пределах года),
+        # возможно матч в следующем году
+        if match_date < current_date.date():
+            # Проверяем, не слишком ли рано (больше 2 месяцев разницы)
+            days_diff = (current_date.date() - match_date).days
+            if days_diff > 60:  # Если разница больше 2 месяцев
+                match_date = datetime(year + 1, month, day).date()
+        
+        return match_date
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка парсинга даты '{date_str}': {e}")
+        return None
 
-@app.route('/')
-def index():
-    return jsonify({"status": "ok", "service": "hockey-monitor"})
+# === Парсинг времени матча ===
+def parse_match_time(time_str):
+    try:
+        # Примеры форматов: "19:30", "19.30", "19-30"
+        # Нормализуем разделитель
+        time_normalized = re.sub(r'[\.\-]', ':', time_str).strip()
+        
+        # Ищем время в формате HH:MM
+        match = re.match(r'(\d{1,2}):(\d{2})', time_normalized)
+        if match:
+            hours = int(match.group(1))
+            minutes = int(match.group(2))
+            
+            # Проверяем валидность времени
+            if 0 <= hours <= 23 and 0 <= minutes <= 59:
+                return datetime.strptime(f"{hours:02d}:{minutes:02d}", "%H:%M").time()
+        
+        return None
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка парсинга времени '{time_str}': {e}")
+        return None
 
-@app.route('/version')
-def version():
-    return jsonify({"version": "2.3.2 - FIXED_PARALLEL_RUN"})
-
-# === Telegram bot ===
-session = AiohttpSession()
-bot = Bot(
-    token=BOT_TOKEN,
-    session=session,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
-dp = Dispatcher()
-
-# === Память ===
-subscribers = set()
-last_matches = []
-
-# Словарь для месяцев
-MONTHS = {
-    "янв": "января",
-    "фев": "февраля",
-    "мар": "марта",
-    "апр": "апреля",
-    "май": "мая",
-    "июн": "июня",
-    "июл": "июля",
-    "авг": "августа",
-    "сен": "сентября",
-    "окт": "октября",
-    "ноя": "ноября",
-    "дек": "декабря"
-}
-
-# Словарь для дней недели
-WEEKDAYS = {
-    "пн": "Понедельник",
-    "вт": "Вторник",
-    "ср": "Среда",
-    "чт": "Четверг",
-    "пт": "Пятница",
-    "сб": "Суббота",
-    "вс": "Воскресенье"
-}
-
-# === Парсинг матчей ===
-async def fetch_matches():
-    async with aiohttp.ClientSession() as session:
-        async with session.get(URL) as resp:
-            html = await resp.text()
-
-    soup = BeautifulSoup(html, 'html.parser')
-    match_items = soup.select("a.match-item")
-    logging.info(f"🎯 Найдено матчей: {len(match_items)}")
-
-    matches = []
-    for item in match_items:
-        # Извлекаем элементы
-        day_elem = item.select_one(".match-day")
-        month_elem = item.select_one(".match-month")
-        time_elem = item.select_one(".match-times")
-        title_elem = item.select_one(".match-title")
-        ticket = item.select_one(".btn.tickets-w_t")
-        ticket_url = ticket.get("data-w_t") if ticket else None
-
-        # Извлекаем текст, если элементы найдены
-        day = day_elem.get_text(strip=True) if day_elem else "?"
-        month_raw = month_elem.get_text(strip=True).lower() if month_elem else "?"
-        time_ = time_elem.get_text(strip=True) if time_elem else "?"
-        title = title_elem.get_text(strip=True) if title_elem else "?"
-
-        # Логируем сырые данные
-        logging.info(f"Raw date data: day={day}, month_raw={month_raw}")
-
-        # Разделяем месяц и день недели (например, "ноя, пт" -> "ноя" и "пт")
-        month, weekday = "?", "?"
-        if month_raw != "?":
-            # Проверяем, есть ли запятая и день недели
-            match = re.match(r'^([а-я]{3,4})(?:,\s*([а-я]{2}))?$', month_raw)
-            if match:
-                month = match.group(1)  # Например, "ноя"
-                weekday = match.group(2) if match.group(2) else "?"  # Например, "пт" или "?"
-            else:
-                month = month_raw  # Если нет запятой, считаем, что это только месяц
-
-        # Преобразуем в полные названия
-        full_month = MONTHS.get(month, month)  # Если месяц не в словаре, оставляем как есть
-        full_weekday = WEEKDAYS.get(weekday, weekday) if weekday != "?" else ""
-
-        # Формируем строку даты
-        date_formatted = f"{day} {full_month}" if day != "?" and month != "?" else "Дата неизвестна"
-        if full_weekday:
-            date_formatted += f", {full_weekday}"
-
-        msg = (
-            f"📅 {date_formatted}\n"
-            f"🏒 {title}\n"
-            f"🕒 {time_}\n"
-        )
-        if ticket_url:
-            msg += f"🎟 <a href='{ticket_url}'>Купить билет</a>"
-        matches.append(msg)
-    return matches
-
-# === Проверка обновлений ===
-async def monitor_matches():
-    global last_matches
-    await asyncio.sleep(5)
-    while True:
-        try:
-            matches = await fetch_matches()
-            if matches != last_matches:
-                last_matches = matches
-                await notify_all(matches)
-            else:
-                logging.info("✅ Изменений нет")
-        except Exception as e:
-            logging.error(f"Ошибка при мониторинге: {e}")
-        await asyncio.sleep(CHECK_INTERVAL)
-
-# === Отправка уведомлений ===
-async def notify_all(matches):
-    if not subscribers:
-        logging.info("❕ Нет подписчиков для уведомления")
-        return
-    for chat_id in subscribers:
-        for match in matches:
-            try:
-                await bot.send_message(chat_id, match)
-            except Exception as e:
-                logging.error(f"Ошибка при отправке пользователю {chat_id}: {e}")
-
-# === Команда /start ===
-@dp.message(CommandStart())
-async def start_cmd(message: types.Message):
-    subscribers.add(message.chat.id)
-    logging.info(f"📝 Новый подписчик: {message.chat.id}")
-    await message.answer("Вы подписаны на уведомления о матчах Динамо Минск! 🏒")
-    matches = await fetch_matches()
-    if matches:
-        for match in matches:
-            await bot.send_message(message.chat.id, match)
-    else:
-        await message.answer("Пока нет доступных матчей.")
-
-# === Команда /stop ===
-@dp.message(Command("stop"))
-async def stop_cmd(message: types.Message):
-    subscribers.discard(message.chat.id)
-    await message.answer("Вы отписались от уведомлений.")
-    logging.info(f"❌ Пользователь {message.chat.id} отписался.")
-
-# === Запуск aiogram и Flask параллельно ===
-async def run_aiogram():
-    await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🌐 Webhook удалён, включен polling режим.")
-    asyncio.create_task(monitor_matches())
-    await dp.start_polling(bot)
-
-def run_flask():
-    app.run(host="0.0.0.0", port=10000)
-
-async def main():
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, run_flask)  # 🚀 Flask в отдельном потоке
-    await run_aiogram()
-
-if __name__ == '__main__':
-    asyncio.run(main())
+# ... (остальной код остается таким же)
