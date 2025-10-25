@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 # ---------------------- CONFIG ----------------------
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
-URL = "https://hcdinamo.by/matchi/"  # проверь этот URL!
+URL = "https://hcdinamo.by/matchi/"  # проверь, чтобы был актуальный URL
 
 # ---------------------- LOGGING ----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -25,6 +25,7 @@ app = Flask(__name__)
 
 matches_cache = set()
 subscribers_file = "subscribers.txt"
+main_loop = None  # глобальная ссылка на event loop
 
 
 # ---------------------- SUBSCRIBERS ----------------------
@@ -119,9 +120,8 @@ def webhook():
         update_data = request.get_json()
         update = Update(**update_data)
 
-        # вместо asyncio.run — планируем выполнение в основном loop
-        loop = asyncio.get_event_loop()
-        loop.create_task(dp.feed_update(bot, update))
+        # используем глобальный event loop
+        asyncio.run_coroutine_threadsafe(dp.feed_update(bot, update), main_loop)
 
         return "OK"
     except Exception as e:
@@ -136,6 +136,9 @@ def index():
 
 # ---------------------- MAIN ----------------------
 async def main():
+    global main_loop
+    main_loop = asyncio.get_running_loop()
+
     logging.info("🚀 Starting application...")
     await bot.delete_webhook()
 
@@ -146,7 +149,7 @@ async def main():
     # запускаем мониторинг матчей
     asyncio.create_task(monitor_matches())
 
-    # Flask запускаем в отдельном потоке
+    # Flask в отдельном потоке
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
 
     while True:
