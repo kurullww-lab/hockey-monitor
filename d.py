@@ -49,7 +49,7 @@ dp = Dispatcher()
 subscribers = set()
 last_matches = []
 
-# Словари для месяцев и дней недели (остаются без изменений)
+# Словари для месяцев и дней недели
 MONTHS = {
     "янв": "января", "фев": "февраля", "мар": "марта", "апр": "апреля",
     "май": "мая", "июн": "июня", "июл": "июля", "авг": "августа",
@@ -61,7 +61,7 @@ WEEKDAYS = {
     "пт": "Пятница", "сб": "Суббота", "вс": "Воскресенье"
 }
 
-# === Парсинг матчей (упрощенная версия для деплоя) ===
+# === Парсинг матчей ===
 async def fetch_matches():
     try:
         async with aiohttp.ClientSession() as session:
@@ -86,7 +86,7 @@ async def fetch_matches():
             time_ = time_elem.get_text(strip=True) if time_elem else "?"
             title = title_elem.get_text(strip=True) if title_elem else "?"
 
-            # Упрощенная обработка даты
+            # Обработка даты
             month, weekday = "?", "?"
             if month_raw != "?":
                 match = re.match(r'^([а-я]{3,4})(?:,\s*([а-я]{2}))?$', month_raw)
@@ -144,15 +144,14 @@ def compare_matches(old_matches, new_matches):
 def is_match_started(match):
     try:
         # Базовая проверка - если матч удален, считаем что он начался
-        # В реальной реализации здесь должна быть логика проверки времени
-        return True  # Упрощенно - всегда считаем что матч начался
+        return True
     except Exception:
         return True
 
 # === Проверка обновлений ===
 async def monitor_matches():
     global last_matches
-    await asyncio.sleep(10)  # Даем больше времени на старт
+    await asyncio.sleep(10)
     while True:
         try:
             current_matches = await fetch_matches()
@@ -190,12 +189,11 @@ async def notify_all(message):
         logging.info("❕ Нет подписчиков для уведомления")
         return
     
-    for chat_id in list(subscribers):  # Копируем список для безопасности
+    for chat_id in list(subscribers):
         try:
             await bot.send_message(chat_id, message)
         except Exception as e:
             logging.error(f"❌ Ошибка при отправке пользователю {chat_id}: {e}")
-            # Удаляем невалидного подписчика
             subscribers.discard(chat_id)
 
 # === Команды бота ===
@@ -206,11 +204,9 @@ async def start_cmd(message: types.Message):
     await message.answer("Вы подписаны на уведомления о матчах Динамо Минск! 🏒")
     
     if last_matches:
-        await message.answer(f"📋 Сейчас отслеживается {len(last_matches)} матчей:")
-        for match in last_matches[:3]:  # Отправляем только первые 3 чтобы не спамить
+        # Отправляем все матчи без заголовка
+        for match in last_matches:
             await message.answer(match["message"])
-        if len(last_matches) > 3:
-            await message.answer(f"... и еще {len(last_matches) - 3} матчей")
     else:
         await message.answer("Пока нет доступных матчей. Я сообщу, когда появятся новые!")
 
