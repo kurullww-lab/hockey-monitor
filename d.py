@@ -166,16 +166,15 @@ async def monitor_matches():
 
 
 # === Flask маршруты ===
-@app.route("/webhook", methods=["POST"])
+@app.post("/webhook")
 async def webhook():
     try:
-        update = types.Update.model_validate(await request.get_json())
-        await dp.feed_webhook_update(bot, update)
-        return "OK", 200
+        update = request.json  # без await
+        await dp.feed_update(bot, update)
+        return "OK"
     except Exception as e:
         logging.error(f"Ошибка webhook: {e}")
         return "Error", 500
-
 
 @app.route("/")
 def index():
