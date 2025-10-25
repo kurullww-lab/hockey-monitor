@@ -12,23 +12,22 @@ from bs4 import BeautifulSoup
 
 # ---------------------- CONFIG ----------------------
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # опционально
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))  # интервал проверки
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))  # интервал проверки в секундах
 URL = "https://hcdinamo.by/matchi/"  # страница с матчами
 
 # ---------------------- LOGGING ----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# ---------------------- INIT BOT ----------------------
+# ---------------------- INIT ----------------------
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-
 app = Flask(__name__)
+
 matches_cache = set()
 subscribers_file = "subscribers.txt"
 
 
-# ---------------------- UTILS ----------------------
+# ---------------------- SUBSCRIBERS ----------------------
 def load_subscribers():
     if not os.path.exists(subscribers_file):
         return set()
@@ -45,7 +44,6 @@ def save_subscriber(user_id):
 
 # ---------------------- PARSING ----------------------
 def fetch_matches():
-    """Парсинг матчей с сайта"""
     response = requests.get(URL)
     if response.status_code != 200:
         logging.warning(f"⚠️ Ошибка загрузки ({response.status_code})")
@@ -57,7 +55,7 @@ def fetch_matches():
     return match_titles
 
 
-# ---------------------- MATCH MONITOR ----------------------
+# ---------------------- MONITORING ----------------------
 async def monitor_matches():
     global matches_cache
     await asyncio.sleep(5)
@@ -66,7 +64,6 @@ async def monitor_matches():
     while True:
         try:
             current_matches = set(fetch_matches())
-
             added = current_matches - matches_cache
             removed = matches_cache - current_matches
 
@@ -83,8 +80,7 @@ async def monitor_matches():
                     try:
                         await bot.send_message(user_id, msg)
                     except Exception as e:
-                        logging.warning(f"Не удалось отправить {user_id}: {e}")
-
+                        logging.warning(f"Ошибка отправки {user_id}: {e}")
             else:
                 logging.info("✅ Изменений нет")
 
@@ -101,7 +97,7 @@ async def handle_message(message: types.Message):
     if message.text == "/start":
         save_subscriber(message.from_user.id)
         matches = fetch_matches()
-        msg = f"✅ Вы подписаны на обновления!\nНайдено матчей: {len(matches)}"
+        msg = f"✅ Вы подписаны на уведомления!\nНайдено матчей: {len(matches)}"
         await message.answer(msg)
         logging.info(f"📝 Новый подписчик: {message.from_user.id}")
 
@@ -114,12 +110,12 @@ async def handle_message(message: types.Message):
         logging.info(f"🚫 Пользователь {message.from_user.id} отписался.")
 
 
-# ---------------------- WEBHOOK ----------------------
+# ---------------------- FLASK ROUTES ----------------------
 @app.post("/webhook")
 async def webhook():
     try:
-        data = request.json  # dict
-        update = Update(**data)  # превращаем dict в Update
+        update_data = request.json
+        update = Update(**update_data)
         await dp.feed_update(bot, update)
         return "OK"
     except Exception as e:
@@ -136,19 +132,23 @@ def index():
 async def main():
     logging.info("🚀 Starting application...")
 
-    # устанавливаем webhook
+    # сбросим старый webhook
+    await bot.delete_webhook()
+
+    # установим новый webhook
     webhook_url = "https://hockey-monitor.onrender.com/webhook"
     await bot.set_webhook(webhook_url)
     logging.info(f"🌍 Webhook установлен: {webhook_url}")
 
-    # запускаем мониторинг в фоне
+    # запустим мониторинг в фоне
     asyncio.create_task(monitor_matches())
 
-    # Flask запускаем в отдельном потоке
+    # запустим Flask в отдельном потоке
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
 
-    # aiogram webhook mode
-    await dp.start_polling(bot)
+    # просто “висим”, не вызываем polling!
+    while True:
+        await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
