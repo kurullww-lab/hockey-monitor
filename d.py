@@ -42,26 +42,47 @@ async def fetch_matches():
                 html = await response.text()
                 soup = BeautifulSoup(html, "html.parser")
 
+                match_list_block = soup.select_one("div.match-list")
+                if not match_list_block:
+                    logging.warning("⚠️ Блок .match-list не найден на странице!")
+                    return []
+
+                matches_raw = match_list_block.select("a.match-item")
+                logging.info(f"🔍 Найдено элементов a.match-item в .match-list: {len(matches_raw)}")
+
                 matches = []
-                for match_tag in soup.select("a.match-item"):
-                    day = match_tag.select_one(".match-day").text.strip()
-                    month = match_tag.select_one(".match-month").text.strip()
-                    time = match_tag.select_one(".match-times").text.strip()
-                    title = match_tag.select_one(".match-title").text.strip()
-                    link_tag = match_tag.get("href") or match_tag.get("data-w_t")
-                    if not link_tag:
+                seen = set()  # для исключения дубликатов
+
+                for tag in matches_raw:
+                    day = tag.select_one(".match-day")
+                    month = tag.select_one(".match-month")
+                    time = tag.select_one(".match-times")
+                    title = tag.select_one(".match-title")
+
+                    if not (day and month and time and title):
                         continue
 
-                    match_url = link_tag if link_tag.startswith("http") else f"https://hcdinamo.by{link_tag}"
+                    link = tag.get("href") or tag.get("data-w_t")
+                    if not link:
+                        continue
+
+                    link = link if link.startswith("http") else f"https://hcdinamo.by{link}"
+                    key = (title.text.strip(), link)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+
                     matches.append({
-                        "day": day,
-                        "month": month,
-                        "time": time,
-                        "title": title,
-                        "url": match_url
+                        "day": day.text.strip(),
+                        "month": month.text.strip(),
+                        "time": time.text.strip(),
+                        "title": title.text.strip(),
+                        "url": link
                     })
-                logging.info(f"🎯 Найдено матчей: {len(matches)}")
+
+                logging.info(f"🎯 Уникальных матчей: {len(matches)}")
                 return matches
+
     except Exception as e:
         logging.error(f"Ошибка парсинга: {e}")
         return []
