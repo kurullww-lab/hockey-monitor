@@ -12,12 +12,14 @@ from aiogram.client.default import DefaultBotProperties
 from bs4 import BeautifulSoup
 import re
 import datetime
+import json
 
 # ---------------------- CONFIG ----------------------
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
 URL = "https://hcdinamo.by/tickets/"
 APP_URL = "https://hockey-monitor.onrender.com/version"
+MATCHES_CACHE_FILE = "matches_cache.json"
 
 # ---------------------- LOGGING ----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -27,7 +29,7 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 dp = Dispatcher()
 app = Flask(__name__)
 
-matches_cache = []  # Изменено с set на list
+matches_cache = []
 subscribers_file = "subscribers.txt"
 main_loop = None
 
@@ -58,6 +60,24 @@ WEEKDAYS = {
     "вс": "Воскресенье"
 }
 
+# ---------------------- CACHE MANAGEMENT ----------------------
+def load_matches_cache():
+    if not os.path.exists(MATCHES_CACHE_FILE):
+        return []
+    try:
+        with open(MATCHES_CACHE_FILE, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        logging.error(f"Ошибка загрузки кэша матчей: {e}")
+        return []
+
+def save_matches_cache(matches):
+    try:
+        with open(MATCHES_CACHE_FILE, "w") as f:
+            json.dump(matches, f)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения кэша матчей: {e}")
+
 # ---------------------- SUBSCRIBERS ----------------------
 def load_subscribers():
     if not os.path.exists(subscribers_file):
@@ -70,6 +90,7 @@ def save_subscriber(user_id):
     subs.add(str(user_id))
     with open(subscribers_file, "w") as f:
         f.write("\n".join(subs))
+    logging.info(f"Сохранён подписчик: {user_id}")
 
 # ---------------------- PARSING ----------------------
 async def fetch_matches():
@@ -77,7 +98,7 @@ async def fetch_matches():
     for attempt in range(retries):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(URL, timeout=10) as resp:
+                async with session.get(URL, timeout=15) as resp:
                     if resp.status != 200:
                         logging.warning(f"⚠️ Ошибка загрузки ({resp.status}) для URL: {URL}")
                         continue
@@ -131,11 +152,9 @@ async def fetch_matches():
                 if ticket_url:
                     msg += f"🎟 <a href='{ticket_url}'>Купить билет</a>"
 
-                # Создаём ключ для сравнения
                 match_key = f"{date_formatted}|{title}|{time_}"
                 matches.append((match_key, msg))
             
-            # Сортируем по дате
             matches.sort(key=lambda x: x[0])
             return [msg for _, msg in matches]
         except aiohttp.ClientError as e:
@@ -151,6 +170,7 @@ async def fetch_matches():
 # ---------------------- MONITORING ----------------------
 async def monitor_matches():
     global matches_cache
+    matches_cache = load_matches_cache()
     await asyncio.sleep(5)
     logging.info("🏁 Мониторинг матчей запущен!")
 
@@ -173,13 +193,15 @@ async def monitor_matches():
                 for user_id in load_subscribers():
                     try:
                         await bot.send_message(user_id, msg)
+                        logging.info(f"Уведомление отправлено пользователю {user_id}")
                     except Exception as e:
                         logging.warning(f"Ошибка отправки {user_id}: {e}")
                 logging.info(f"🔔 Отправлены уведомления о {len(added)} новых и {len(removed)} удалённых матчах")
+                matches_cache = current_matches
+                save_matches_cache(matches_cache)
             else:
                 logging.info("✅ Изменений нет")
 
-            matches_cache = current_matches
         except Exception as e:
             logging.error(f"Ошибка в мониторинге: {e}")
 
@@ -189,16 +211,17 @@ async def monitor_matches():
 async def keep_awake():
     current_interval = 840  # 14 минут
     min_interval = 300  # 5 минут при ошибках
-    await asyncio.sleep(30)  # Увеличенная задержка на старт
+    await asyncio.sleep(60)  # Увеличенная задержка
     while True:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(APP_URL, timeout=5) as resp:
+                    response_text = await resp.text()
                     if resp.status == 200:
-                        logging.info(f"Keep-awake ping: status {resp.status}")
+                        logging.info(f"Keep-awake ping: status {resp.status}, response: {response_text[:50]}...")
                         current_interval = 840
                     else:
-                        logging.warning(f"Keep-awake неудача: статус {resp.status}")
+                        logging.warning(f"Keep-awake неудача: статус {resp.status}, response: {response_text[:50]}...")
                         current_interval = max(current_interval - 60, min_interval)
         except Exception as e:
             logging.error(f"Keep-awake error: {e}")
@@ -212,12 +235,13 @@ async def handle_message(message: types.Message):
         save_subscriber(message.from_user.id)
         matches = await fetch_matches()
         msg = f"✅ Вы подписаны на уведомления!\nНайдено матчей: {len(matches)}"
+        await message.answer(msg)
         if matches:
             for match in matches:
                 await bot.send_message(message.from_user.id, match)
+                logging.info(f"Отправлен матч пользователю {message.from_user.id}: {match[:50]}...")
         else:
-            msg += "\nПока нет доступных матчей."
-        await message.answer(msg)
+            await message.answer("Пока нет доступных матчей.")
         logging.info(f"📝 Новый подписчик: {message.from_user.id}")
 
     elif message.text == "/stop":
@@ -257,7 +281,7 @@ def index():
 
 @app.route("/version", methods=["GET"])
 def version():
-    return jsonify({"version": "2.3.6 - FIXED_NOTIFICATIONS_AND_PING"})
+    return jsonify({"version": "2.3.7 - FIXED_PING_AND_NOTIFICATIONS"})
 
 # ---------------------- MAIN ----------------------
 async def main():
@@ -282,3 +306,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("⛔ Bot stopped")
+        save_matches_cache(matches_cache)
