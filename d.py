@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import logging
 import aiohttp
@@ -35,23 +36,26 @@ async def fetch_matches():
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(BASE_URL, headers=headers) as response:
+                html = await response.text()
+                logging.info(f"📄 Статус: {response.status}, длина HTML: {len(html)} символов")
+                logging.debug(f"🔎 Первые 300 символов HTML:\n{html[:300]}")
+
                 if response.status != 200:
                     logging.error(f"Ошибка загрузки страницы: {response.status}")
                     return []
 
-                html = await response.text()
                 soup = BeautifulSoup(html, "html.parser")
 
-                match_list_block = soup.select_one("div.match-list")
-                if not match_list_block:
-                    logging.warning("⚠️ Блок .match-list не найден на странице!")
-                    return []
+                # ищем все теги <a class="match-item"> вне архивов
+                matches_raw = [
+                    tag for tag in soup.find_all("a", class_=re.compile("match-item"))
+                    if "archive" not in (tag.get("class") or []) and "hidden" not in (tag.get("class") or [])
+                ]
 
-                matches_raw = match_list_block.select("a.match-item")
-                logging.info(f"🔍 Найдено элементов a.match-item в .match-list: {len(matches_raw)}")
+                logging.info(f"🎯 Найдено элементов a.match-item: {len(matches_raw)}")
 
                 matches = []
-                seen = set()  # для исключения дубликатов
+                seen = set()
 
                 for tag in matches_raw:
                     day = tag.select_one(".match-day")
@@ -84,8 +88,31 @@ async def fetch_matches():
                 return matches
 
     except Exception as e:
-        logging.error(f"Ошибка парсинга: {e}")
+        logging.exception(f"Ошибка парсинга: {e}")
         return []
+
+# === Обработчик команды /start ===
+@dp.message(F.text == "/start")
+async def start_handler(message: types.Message):
+    chat_id = message.chat.id
+    subscribers = load_subscribers()
+
+    if chat_id not in subscribers:
+        subscribers.append(chat_id)
+        save_subscribers(subscribers)
+        logging.info(f"📝 Новый подписчик: {chat_id}")
+
+    await message.answer("✅ Вы подписаны на обновления матчей Динамо Минск!")
+
+    # сразу покажем актуальные матчи
+    matches = await fetch_matches()
+    if not matches:
+        await message.answer("⚠️ Пока нет доступных матчей на сайте.")
+    else:
+        text = "📅 Текущие матчи:\n\n" + "\n".join(
+            [f"{m['day']} {m['month']} ({m['time']}) — {m['title']}\n{m['url']}" for m in matches]
+        )
+        await message.answer(text[:4000])
 
 # === Проверка изменений матчей ===
 async def check_for_updates():
