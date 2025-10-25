@@ -7,7 +7,7 @@ from flask import Flask, request, jsonify
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.types import Update
-from aiogram.filters import Command, CommandStart, CommandStop
+from aiogram.filters import Command, CommandStart
 from aiogram.client.default import DefaultBotProperties
 from bs4 import BeautifulSoup
 import re
@@ -163,7 +163,9 @@ async def fetch_matches():
                 matches.append((match_key, msg))
             
             matches.sort(key=lambda x: x[0])
-            return [msg for _, msg in matches]
+            result = [msg for _, msg in matches]
+            logging.info(f"Возвращено матчей из fetch_matches: {len(result)}")
+            return result
         except aiohttp.ClientError as e:
             logging.error(f"Ошибка сети на попытке {attempt + 1}/{retries}: {e}")
             if attempt < retries - 1:
@@ -193,14 +195,14 @@ async def monitor_matches():
             if added or removed:
                 msg = "⚡ Обновления матчей:\n"
                 if added:
-                    msg += "\n➕ Добавлено:\n" + "\n".join(added)
+                    msg += "\n➕ Добавлено:\n" + "\n".join(added[:5])  # Ограничим до 5 матчей
                 if removed:
-                    msg += "\n➖ Удалено:\n" + "\n".join(removed)
+                    msg += "\n➖ Удалено:\n" + "\n".join(removed[:5])
 
                 for user_id in load_subscribers():
                     try:
                         await bot.send_message(user_id, msg)
-                        logging.info(f"Уведомление отправлено пользователю {user_id}")
+                        logging.info(f"Уведомление отправлено пользователю {user_id}: {msg[:50]}...")
                     except Exception as e:
                         logging.warning(f"Ошибка отправки {user_id}: {e}")
                 logging.info(f"🔔 Отправлены уведомления о {len(added)} новых и {len(removed)} удалённых матчах")
@@ -218,7 +220,7 @@ async def monitor_matches():
 async def keep_awake():
     current_interval = 840  # 14 минут
     min_interval = 300  # 5 минут при ошибках
-    await asyncio.sleep(60)  # Увеличенная задержка
+    await asyncio.sleep(60)
     while True:
         try:
             async with aiohttp.ClientSession() as session:
@@ -242,17 +244,20 @@ async def handle_start(message: types.Message):
         user_id = message.from_user.id
         save_subscriber(user_id)
         matches = await fetch_matches()
+        logging.info(f"handle_start: Найдено матчей для {user_id}: {len(matches)}")
         msg = f"✅ Вы подписаны на уведомления!\nНайдено матчей: {len(matches)}"
         await message.answer(msg)
         if matches:
-            for match in matches:
+            for match in matches[:5]:  # Ограничим до 5 матчей
                 await bot.send_message(user_id, match)
                 logging.info(f"Отправлен матч пользователю {user_id}: {match[:50]}...")
+            if len(matches) > 5:
+                await bot.send_message(user_id, f"...и ещё {len(matches) - 5} матчей. Используйте /status для подробностей.")
         else:
             await message.answer("Пока нет доступных матчей.")
         logging.info(f"📝 Новый подписчик: {user_id}")
     except Exception as e:
-        logging.error(f"Ошибка обработки /start для {message.from_user.id}: {e}")
+        logging.error(f"Ошибка обработки /start для {user_id}: {e}")
         await message.answer("❌ Произошла ошибка. Попробуйте позже.")
 
 @dp.message(Command("stop"))
@@ -266,7 +271,7 @@ async def handle_stop(message: types.Message):
         await message.answer("❌ Вы отписались от уведомлений.")
         logging.info(f"🚫 Пользователь {user_id} отписался.")
     except Exception as e:
-        logging.error(f"Ошибка обработки /stop для {message.from_user.id}: {e}")
+        logging.error(f"Ошибка обработки /stop для {user_id}: {e}")
         await message.answer("❌ Произошла ошибка. Попробуйте позже.")
 
 @dp.message(Command("status"))
@@ -304,7 +309,7 @@ def index():
 
 @app.route("/version", methods=["GET"])
 def version():
-    return jsonify({"version": "2.3.8 - FIXED_START_COMMAND"})
+    return jsonify({"version": "2.3.9 - FIXED_START_ZERO_MATCHES"})
 
 @app.route("/subscribers", methods=["GET"])
 def get_subscribers():
