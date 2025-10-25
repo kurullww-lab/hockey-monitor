@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 # ---------------------- CONFIG ----------------------
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
-URL = "https://hcdinamo.by/matchi/"
+URL = "https://hcdinamo.by/matchi/"  # проверь этот URL!
 
 # ---------------------- LOGGING ----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -44,15 +44,19 @@ def save_subscriber(user_id):
 
 # ---------------------- PARSING ----------------------
 def fetch_matches():
-    response = requests.get(URL)
-    if response.status_code != 200:
-        logging.warning(f"⚠️ Ошибка загрузки ({response.status_code})")
-        return []
+    try:
+        response = requests.get(URL, timeout=10)
+        if response.status_code != 200:
+            logging.warning(f"⚠️ Ошибка загрузки ({response.status_code})")
+            return []
 
-    soup = BeautifulSoup(response.text, "html.parser")
-    match_titles = [div.get_text(strip=True) for div in soup.select("div.match-title")]
-    logging.info(f"🎯 Найдено матчей: {len(match_titles)}")
-    return match_titles
+        soup = BeautifulSoup(response.text, "html.parser")
+        titles = [div.get_text(strip=True) for div in soup.select("div.match-title")]
+        logging.info(f"🎯 Найдено матчей: {len(titles)}")
+        return titles
+    except Exception as e:
+        logging.error(f"Ошибка при загрузке матчей: {e}")
+        return []
 
 
 # ---------------------- MONITORING ----------------------
@@ -70,11 +74,9 @@ async def monitor_matches():
             if added or removed:
                 msg = "⚡ Обновления матчей:\n"
                 if added:
-                    msg += f"\n➕ Добавлено:\n" + "\n".join(added)
+                    msg += "\n➕ Добавлено:\n" + "\n".join(added)
                 if removed:
-                    msg += f"\n➖ Удалено:\n" + "\n".join(removed)
-
-                logging.info(f"⚡ Изменения: добавлено {len(added)}, удалено {len(removed)}")
+                    msg += "\n➖ Удалено:\n" + "\n".join(removed)
 
                 for user_id in load_subscribers():
                     try:
@@ -116,7 +118,11 @@ def webhook():
     try:
         update_data = request.get_json()
         update = Update(**update_data)
-        asyncio.run(dp.feed_update(bot, update))
+
+        # вместо asyncio.run — планируем выполнение в основном loop
+        loop = asyncio.get_event_loop()
+        loop.create_task(dp.feed_update(bot, update))
+
         return "OK"
     except Exception as e:
         logging.error(f"Ошибка webhook: {e}")
@@ -131,7 +137,6 @@ def index():
 # ---------------------- MAIN ----------------------
 async def main():
     logging.info("🚀 Starting application...")
-
     await bot.delete_webhook()
 
     webhook_url = "https://hockey-monitor.onrender.com/webhook"
