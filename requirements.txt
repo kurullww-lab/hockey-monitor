@@ -3,3 +3,4 @@ flask==3.0.3
 beautifulsoup4==4.12.3
 aiohttp==3.12.15
 requests-html
+lxml[html_clean]
