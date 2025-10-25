@@ -12,8 +12,8 @@ from bs4 import BeautifulSoup
 
 # ---------------------- CONFIG ----------------------
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))  # интервал проверки в секундах
-URL = "https://hcdinamo.by/matchi/"  # страница с матчами
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
+URL = "https://hcdinamo.by/matchi/"
 
 # ---------------------- LOGGING ----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -111,19 +111,19 @@ async def handle_message(message: types.Message):
 
 
 # ---------------------- FLASK ROUTES ----------------------
-@app.post("/webhook")
-async def webhook():
+@app.route("/webhook", methods=["POST"])
+def webhook():
     try:
-        update_data = request.json
+        update_data = request.get_json()
         update = Update(**update_data)
-        await dp.feed_update(bot, update)
+        asyncio.run(dp.feed_update(bot, update))
         return "OK"
     except Exception as e:
         logging.error(f"Ошибка webhook: {e}")
         return "Error", 500
 
 
-@app.get("/")
+@app.route("/", methods=["GET"])
 def index():
     return "✅ Hockey Monitor Bot is running"
 
@@ -132,21 +132,18 @@ def index():
 async def main():
     logging.info("🚀 Starting application...")
 
-    # сбросим старый webhook
     await bot.delete_webhook()
 
-    # установим новый webhook
     webhook_url = "https://hockey-monitor.onrender.com/webhook"
     await bot.set_webhook(webhook_url)
     logging.info(f"🌍 Webhook установлен: {webhook_url}")
 
-    # запустим мониторинг в фоне
+    # запускаем мониторинг матчей
     asyncio.create_task(monitor_matches())
 
-    # запустим Flask в отдельном потоке
+    # Flask запускаем в отдельном потоке
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
 
-    # просто “висим”, не вызываем polling!
     while True:
         await asyncio.sleep(3600)
 
