@@ -1,218 +1,201 @@
 import os
-import re
 import asyncio
 import logging
 import aiohttp
 from aiohttp import web
 from bs4 import BeautifulSoup
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import Command
+from aiogram.types import Message
+import json
+from pathlib import Path
 
-# === Настройки логирования ===
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# ------------------- НАСТРОЙКА ЛОГГИРОВАНИЯ -------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
-# === Константы ===
+# ------------------- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ -------------------
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))  # интервал проверки в секундах (по умолчанию 5 мин)
-BASE_URL = "https://hcdinamo.by/tickets/"
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # твой ID (для отладки)
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 300))
+WEBHOOK_HOST = "https://hockey-monitor.onrender.com"
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"https://hockey-monitor.onrender.com{WEBHOOK_PATH}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
-# === Инициализация бота ===
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# ------------------- ОБЪЕКТЫ -------------------
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 
-# === Глобальные данные ===
-subscribers = set()
-previous_matches = []
+# ------------------- ФАЙЛ С ПОДПИСЧИКАМИ -------------------
+SUBSCRIBERS_FILE = Path("subscribers.json")
 
-# === Функция парсинга матчей ===
+def load_subscribers():
+    if SUBSCRIBERS_FILE.exists():
+        try:
+            with open(SUBSCRIBERS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            logging.warning("⚠️ Ошибка чтения subscribers.json, создаётся новый файл.")
+    return []
+
+def save_subscribers(subscribers):
+    try:
+        with open(SUBSCRIBERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(subscribers, f)
+    except Exception as e:
+        logging.error(f"Ошибка при сохранении subscribers.json: {e}")
+
+# ------------------- ОСНОВНОЙ URL С МАТЧАМИ -------------------
+URL = "https://hcdinamo.by/tickets/"
+
+# ------------------- ХРАНЕНИЕ МАТЧЕЙ -------------------
+previous_matches = set()
+
+# ------------------- ПАРСИНГ МАТЧЕЙ -------------------
 async def fetch_matches():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(BASE_URL, headers=headers) as response:
+            async with session.get(URL, headers={"User-Agent": "Mozilla/5.0"}) as response:
                 html = await response.text()
                 logging.info(f"📄 Статус: {response.status}, длина HTML: {len(html)} символов")
-                logging.debug(f"🔎 Первые 300 символов HTML:\n{html[:300]}")
 
                 if response.status != 200:
-                    logging.error(f"Ошибка загрузки страницы: {response.status}")
+                    logging.warning("⚠️ Ошибка загрузки страницы, статус не 200")
                     return []
 
                 soup = BeautifulSoup(html, "html.parser")
+                match_items = soup.select("a.match-item")
 
-                # ищем все теги <a class="match-item"> вне архивов
-                matches_raw = [
-                    tag for tag in soup.find_all("a", class_=re.compile("match-item"))
-                    if "archive" not in (tag.get("class") or []) and "hidden" not in (tag.get("class") or [])
-                ]
-
-                logging.info(f"🎯 Найдено элементов a.match-item: {len(matches_raw)}")
+                logging.info(f"🎯 Найдено элементов a.match-item: {len(match_items)}")
 
                 matches = []
-                seen = set()
+                for item in match_items:
+                    date_day = item.select_one(".match-day")
+                    date_month = item.select_one(".match-month")
+                    date_time = item.select_one(".match-times")
+                    title = item.select_one(".match-title")
+                    link_tag = item.get("href")
 
-                for tag in matches_raw:
-                    day = tag.select_one(".match-day")
-                    month = tag.select_one(".match-month")
-                    time = tag.select_one(".match-times")
-                    title = tag.select_one(".match-title")
-
-                    if not (day and month and time and title):
+                    if not (date_day and date_month and date_time and title):
                         continue
 
-                    link = tag.get("href") or tag.get("data-w_t")
-                    if not link:
-                        continue
+                    match_str = f"{date_day.text.strip()} {date_month.text.strip()} {date_time.text.strip()} — {title.text.strip()} | {link_tag}"
+                    matches.append(match_str)
 
-                    link = link if link.startswith("http") else f"https://hcdinamo.by{link}"
-                    key = (title.text.strip(), link)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-
-                    matches.append({
-                        "day": day.text.strip(),
-                        "month": month.text.strip(),
-                        "time": time.text.strip(),
-                        "title": title.text.strip(),
-                        "url": link
-                    })
-
-                logging.info(f"🎯 Уникальных матчей: {len(matches)}")
-                return matches
+                unique = list(set(matches))
+                logging.info(f"🎯 Уникальных матчей: {len(unique)}")
+                return unique
 
     except Exception as e:
-        logging.exception(f"Ошибка парсинга: {e}")
+        logging.error(f"Ошибка при парсинге: {e}")
         return []
 
-# === Обработчик команды /start ===
-@dp.message(F.text == "/start")
-async def start_handler(message: types.Message):
-    chat_id = message.chat.id
-    subscribers = load_subscribers()
+# ------------------- ОТПРАВКА СООБЩЕНИЙ -------------------
+async def notify_all(subscribers, new_matches, removed_matches):
+    for chat_id in subscribers:
+        try:
+            if new_matches:
+                for m in new_matches:
+                    parts = m.split("—")
+                    if len(parts) == 2:
+                        text = (
+                            f"📅 <b>{parts[0].split('|')[0].strip()}</b>\n"
+                            f"🏒 {parts[1].split('|')[0].strip()}\n"
+                            f"🎟 <a href='{m.split('|')[1].strip()}'>Купить билет</a>"
+                        )
+                        await bot.send_message(chat_id, text)
+            if removed_matches:
+                for m in removed_matches:
+                    text = f"❌ Матч удалён: {m}"
+                    await bot.send_message(chat_id, text)
+        except Exception as e:
+            logging.error(f"Ошибка при отправке пользователю {chat_id}: {e}")
 
-    if chat_id not in subscribers:
-        subscribers.append(chat_id)
-        save_subscribers(subscribers)
-        logging.info(f"📝 Новый подписчик: {chat_id}")
-
-    await message.answer("✅ Вы подписаны на обновления матчей Динамо Минск!")
-
-    # сразу покажем актуальные матчи
-    matches = await fetch_matches()
-    if not matches:
-        await message.answer("⚠️ Пока нет доступных матчей на сайте.")
-    else:
-        text = "📅 Текущие матчи:\n\n" + "\n".join(
-            [f"{m['day']} {m['month']} ({m['time']}) — {m['title']}\n{m['url']}" for m in matches]
-        )
-        await message.answer(text[:4000])
-
-# === Проверка изменений матчей ===
-async def check_for_updates():
+# ------------------- МОНИТОРИНГ -------------------
+async def monitor_matches():
     global previous_matches
+    await asyncio.sleep(5)
+    logging.info("🏁 Мониторинг матчей запущен!")
 
-    matches = await fetch_matches()
-    if not matches:
-        logging.info("✅ Изменений нет (или сайт недоступен)")
-        return
-
-    if matches != previous_matches:
-        added = [m for m in matches if m not in previous_matches]
-        removed = [m for m in previous_matches if m not in matches]
-        previous_matches = matches
-
-        if added or removed:
-            logging.info(f"⚡ Обновления: добавлено {len(added)}, удалено {len(removed)}")
-
-            for chat_id in subscribers:
-                # Новые матчи
-                for m in added:
-                    msg = (
-                        f"📅 <b>{m['day']} {m['month']}</b> {m['time']}\n"
-                        f"🏒 {m['title']}\n"
-                        f"🎟 <a href='{m['url']}'>Купить билет</a>"
-                    )
-                    try:
-                        await bot.send_message(chat_id, msg)
-                    except Exception as e:
-                        logging.error(f"Ошибка отправки сообщения: {e}")
-
-                # Удалённые матчи (например, начались)
-                for m in removed:
-                    msg = (
-                        f"❌ Матч удалён с сайта (возможно, начался)\n"
-                        f"📅 <b>{m['day']} {m['month']}</b> {m['time']}\n"
-                        f"🏒 {m['title']}"
-                    )
-                    try:
-                        await bot.send_message(chat_id, msg)
-                    except Exception as e:
-                        logging.error(f"Ошибка уведомления об удалении: {e}")
-    else:
-        logging.info("✅ Изменений нет")
-
-# === Периодический мониторинг ===
-async def scheduler():
     while True:
-        await check_for_updates()
+        matches = await fetch_matches()
+        if matches:
+            new = set(matches) - previous_matches
+            removed = previous_matches - set(matches)
+            if new or removed:
+                logging.info(f"⚡ Обновления: добавлено {len(new)}, удалено {len(removed)}")
+                subscribers = load_subscribers()
+                await notify_all(subscribers, new, removed)
+            else:
+                logging.info("✅ Изменений нет")
+            previous_matches = set(matches)
         await asyncio.sleep(CHECK_INTERVAL)
 
-# === Обработчики Telegram ===
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    user_id = message.chat.id
-    if user_id not in subscribers:
-        subscribers.add(user_id)
-        await message.answer("✅ Вы подписаны на уведомления о матчах Динамо Минск!")
-        logging.info(f"📝 Новый подписчик: {user_id}")
-    else:
-        await message.answer("Вы уже подписаны.")
+# ------------------- КОМАНДЫ -------------------
+@dp.message(F.text == "/start")
+async def start_handler(message: Message):
+    subscribers = load_subscribers()
+    if message.chat.id not in subscribers:
+        subscribers.append(message.chat.id)
+        save_subscribers(subscribers)
+        logging.info(f"📝 Новый подписчик: {message.chat.id}")
+        await message.answer("Вы подписаны на уведомления о матчах Динамо Минск!")
 
-@dp.message(Command("stop"))
-async def cmd_stop(message: types.Message):
-    user_id = message.chat.id
-    if user_id in subscribers:
-        subscribers.remove(user_id)
-        await message.answer("❌ Вы отписались от уведомлений.")
-        logging.info(f"🚫 Подписчик удалён: {user_id}")
+        matches = await fetch_matches()
+        if matches:
+            for m in matches:
+                parts = m.split("—")
+                if len(parts) == 2:
+                    text = (
+                        f"📅 <b>{parts[0].split('|')[0].strip()}</b>\n"
+                        f"🏒 {parts[1].split('|')[0].strip()}\n"
+                        f"🎟 <a href='{m.split('|')[1].strip()}'>Купить билет</a>"
+                    )
+                    await message.answer(text)
+        else:
+            await message.answer("Матчи не найдены на сайте.")
+    else:
+        await message.answer("Вы уже подписаны на уведомления о матчах.")
+
+@dp.message(F.text == "/stop")
+async def stop_handler(message: Message):
+    subscribers = load_subscribers()
+    if message.chat.id in subscribers:
+        subscribers.remove(message.chat.id)
+        save_subscribers(subscribers)
+        await message.answer("Вы отписаны от уведомлений о матчах.")
+        logging.info(f"🚫 Отписался: {message.chat.id}")
     else:
         await message.answer("Вы не были подписаны.")
 
-# === Flask-like сервер для Webhook ===
+# ------------------- FLASK-СЕРВЕР -------------------
 async def handle_webhook(request):
     try:
-        update = await request.json()
-        await dp.feed_webhook_update(bot, update)
-        return web.Response(text="ok")
+        data = await request.json()
+        await dp.feed_webhook_update(bot, data)
+        return web.Response(status=200)
     except Exception as e:
         logging.error(f"Ошибка в webhook: {e}")
         return web.Response(status=500)
 
-async def start_bot():
-    app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, handle_webhook)
-    app.router.add_get("/", lambda request: web.Response(text="Bot is running!"))
-
+async def on_startup(app):
+    await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL)
+    asyncio.create_task(monitor_matches())
     logging.info(f"🌍 Webhook установлен: {WEBHOOK_URL}")
 
-    asyncio.create_task(scheduler())
+async def on_shutdown(app):
+    await bot.session.close()
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 10000)
-    await site.start()
-
-    logging.info("🏁 Мониторинг матчей запущен!")
-    while True:
-        await asyncio.sleep(3600)
+def main():
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    app.router.add_get("/", lambda _: web.Response(text="Hockey Monitor is running!"))
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    web.run_app(app, port=10000)
 
 if __name__ == "__main__":
-    asyncio.run(start_bot())
+    main()
