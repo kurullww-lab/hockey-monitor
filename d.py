@@ -2,11 +2,12 @@ import os
 import json
 import asyncio
 import logging
-from aiohttp import web, ClientSession
-from bs4 import BeautifulSoup
+from aiohttp import web
+from requests_html import AsyncHTMLSession
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from bs4 import BeautifulSoup
 
 # ===============================
 # 🔧 НАСТРОЙКИ
@@ -16,16 +17,16 @@ WEBHOOK_URL = "https://hockey-monitor.onrender.com/webhook"
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 300))
 SUBSCRIBERS_FILE = "subscribers.json"
 MATCHES_FILE = "matches.json"
-TARGET_URL = "https://hcdinamo.by/matches/"  # можно поменять при необходимости
+TARGET_URL = "https://hcdinamo.by/matches/"
 
 # ===============================
-# ⚙️ НАСТРОЙКА ЛОГИРОВАНИЯ
+# ⚙️ ЛОГИРОВАНИЕ
 # ===============================
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ===============================
-# 🧠 ИНИЦИАЛИЗАЦИЯ БОТА
+# 🤖 БОТ
 # ===============================
 bot = Bot(
     token=BOT_TOKEN,
@@ -34,7 +35,7 @@ bot = Bot(
 dp = Dispatcher()
 
 # ===============================
-# 📁 УТИЛИТЫ
+# 📁 ХЕЛПЕРЫ
 # ===============================
 def load_json(filename):
     if os.path.exists(filename):
@@ -59,40 +60,38 @@ def save_matches(matches):
     save_json(MATCHES_FILE, matches)
 
 # ===============================
-# 🕸 ПАРСЕР
+# 🕸 ПАРСЕР (JS + HTML)
 # ===============================
 async def fetch_matches():
-    async with ClientSession() as session:
-        async with session.get(TARGET_URL, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-            html = await resp.text()
-            logging.info(f"📄 Статус: {resp.status}, длина HTML: {len(html)} символов")
-            if resp.status != 200:
-                return []
-            soup = BeautifulSoup(html, "html.parser")
-            matches = []
+    session = AsyncHTMLSession()
+    r = await session.get(TARGET_URL)
+    await r.html.arender(timeout=20, sleep=3)  # дождаться загрузки JS
+    html = r.html.html
 
-            items = soup.select("a.match-item")
-            logging.info(f"🎯 Найдено элементов a.match-item: {len(items)}")
+    soup = BeautifulSoup(html, "html.parser")
+    matches = []
 
-            for a in items:
-                title_tag = a.select_one(".match-title")
-                day = a.select_one(".match-day")
-                month = a.select_one(".match-month")
-                time = a.select_one(".match-times")
-                link = a.get("href")
+    items = soup.select("a.match-item")
+    logging.info(f"🎯 Найдено элементов a.match-item: {len(items)}")
 
-                if title_tag and day and month and time:
-                    title = title_tag.text.strip()
-                    date = f"{day.text.strip()} {month.text.strip()} {time.text.strip()}"
-                    matches.append({
-                        "title": title,
-                        "date": date,
-                        "link": link
-                    })
-            # Убираем дубликаты по title+date
-            unique = {f"{m['title']}|{m['date']}": m for m in matches}
-            logging.info(f"🎯 Уникальных матчей: {len(unique)}")
-            return list(unique.values())
+    for a in items:
+        title_tag = a.select_one(".match-title")
+        day = a.select_one(".match-day")
+        month = a.select_one(".match-month")
+        time = a.select_one(".match-times")
+        link = a.get("href")
+
+        if title_tag and day and month and time:
+            title = title_tag.text.strip()
+            date = f"{day.text.strip()} {month.text.strip()} {time.text.strip()}"
+            matches.append({
+                "title": title,
+                "date": date,
+                "link": link
+            })
+
+    logging.info(f"🎯 Уникальных матчей: {len(matches)}")
+    return matches
 
 # ===============================
 # 🔁 МОНИТОРИНГ
@@ -143,7 +142,7 @@ async def notify_subscribers(added, removed):
                 await bot.send_message(chat_id, msg)
 
 # ===============================
-# 🤖 ОБРАБОТЧИКИ
+# 🤖 КОМАНДЫ
 # ===============================
 @dp.message()
 async def start_handler(message: types.Message):
@@ -174,7 +173,7 @@ async def start_handler(message: types.Message):
             await message.answer("Вы не были подписаны.")
 
 # ===============================
-# 🌍 ВЕБ-СЕРВЕР (WEBHOOK)
+# 🌍 WEBHOOK
 # ===============================
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
@@ -200,8 +199,5 @@ app.router.add_get("/", lambda _: web.Response(text="✅ Bot is running"))
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
-# ===============================
-# 🚀 ЗАПУСК
-# ===============================
 if __name__ == "__main__":
     web.run_app(app, host="0.0.0.0", port=10000)
