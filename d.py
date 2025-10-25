@@ -7,7 +7,7 @@ from flask import Flask, request, jsonify
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.types import Update
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import Command, CommandStart, CommandStop
 from aiogram.client.default import DefaultBotProperties
 from bs4 import BeautifulSoup
 import re
@@ -82,15 +82,22 @@ def save_matches_cache(matches):
 def load_subscribers():
     if not os.path.exists(subscribers_file):
         return set()
-    with open(subscribers_file, "r") as f:
-        return set(f.read().splitlines())
+    try:
+        with open(subscribers_file, "r") as f:
+            return set(f.read().splitlines())
+    except Exception as e:
+        logging.error(f"Ошибка загрузки подписчиков: {e}")
+        return set()
 
 def save_subscriber(user_id):
     subs = load_subscribers()
     subs.add(str(user_id))
-    with open(subscribers_file, "w") as f:
-        f.write("\n".join(subs))
-    logging.info(f"Сохранён подписчик: {user_id}")
+    try:
+        with open(subscribers_file, "w") as f:
+            f.write("\n".join(subs))
+        logging.info(f"Сохранён подписчик: {user_id}")
+    except Exception as e:
+        logging.error(f"Ошибка сохранения подписчика {user_id}: {e}")
 
 # ---------------------- PARSING ----------------------
 async def fetch_matches():
@@ -229,30 +236,42 @@ async def keep_awake():
         await asyncio.sleep(current_interval)
 
 # ---------------------- HANDLERS ----------------------
-@dp.message()
-async def handle_message(message: types.Message):
-    if message.text == "/start":
-        save_subscriber(message.from_user.id)
+@dp.message(CommandStart())
+async def handle_start(message: types.Message):
+    try:
+        user_id = message.from_user.id
+        save_subscriber(user_id)
         matches = await fetch_matches()
         msg = f"✅ Вы подписаны на уведомления!\nНайдено матчей: {len(matches)}"
         await message.answer(msg)
         if matches:
             for match in matches:
-                await bot.send_message(message.from_user.id, match)
-                logging.info(f"Отправлен матч пользователю {message.from_user.id}: {match[:50]}...")
+                await bot.send_message(user_id, match)
+                logging.info(f"Отправлен матч пользователю {user_id}: {match[:50]}...")
         else:
             await message.answer("Пока нет доступных матчей.")
-        logging.info(f"📝 Новый подписчик: {message.from_user.id}")
+        logging.info(f"📝 Новый подписчик: {user_id}")
+    except Exception as e:
+        logging.error(f"Ошибка обработки /start для {message.from_user.id}: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте позже.")
 
-    elif message.text == "/stop":
+@dp.message(Command("stop"))
+async def handle_stop(message: types.Message):
+    try:
+        user_id = message.from_user.id
         subs = load_subscribers()
-        subs.discard(str(message.from_user.id))
+        subs.discard(str(user_id))
         with open(subscribers_file, "w") as f:
             f.write("\n".join(subs))
         await message.answer("❌ Вы отписались от уведомлений.")
-        logging.info(f"🚫 Пользователь {message.from_user.id} отписался.")
+        logging.info(f"🚫 Пользователь {user_id} отписался.")
+    except Exception as e:
+        logging.error(f"Ошибка обработки /stop для {message.from_user.id}: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте позже.")
 
-    elif message.text == "/status":
+@dp.message(Command("status"))
+async def handle_status(message: types.Message):
+    try:
         last_check = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         status_msg = (
             f"🛠 Статус бота:\n"
@@ -262,12 +281,16 @@ async def handle_message(message: types.Message):
             f"🔄 Интервал проверки: {CHECK_INTERVAL} сек"
         )
         await message.answer(status_msg)
+    except Exception as e:
+        logging.error(f"Ошибка обработки /status для {message.from_user.id}: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте позже.")
 
 # ---------------------- FLASK ROUTES ----------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         update_data = request.get_json()
+        logging.info(f"Получен вебхук: {update_data}")
         update = Update(**update_data)
         asyncio.run_coroutine_threadsafe(dp.feed_update(bot, update), main_loop)
         return "OK"
@@ -281,7 +304,16 @@ def index():
 
 @app.route("/version", methods=["GET"])
 def version():
-    return jsonify({"version": "2.3.7 - FIXED_PING_AND_NOTIFICATIONS"})
+    return jsonify({"version": "2.3.8 - FIXED_START_COMMAND"})
+
+@app.route("/subscribers", methods=["GET"])
+def get_subscribers():
+    try:
+        subs = load_subscribers()
+        return jsonify({"subscribers": list(subs)})
+    except Exception as e:
+        logging.error(f"Ошибка получения подписчиков: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # ---------------------- MAIN ----------------------
 async def main():
@@ -289,11 +321,15 @@ async def main():
     main_loop = asyncio.get_running_loop()
 
     logging.info("🚀 Starting application...")
-    await bot.delete_webhook()
-
-    webhook_url = "https://hockey-monitor.onrender.com/webhook"
-    await bot.set_webhook(webhook_url)
-    logging.info(f"🌍 Webhook установлен: {webhook_url}")
+    try:
+        await bot.delete_webhook()
+        webhook_url = "https://hockey-monitor.onrender.com/webhook"
+        await bot.set_webhook(webhook_url)
+        logging.info(f"🌍 Webhook установлен: {webhook_url}")
+    except Exception as e:
+        logging.error(f"Ошибка установки вебхука: {e}")
+        logging.info("Переключаемся на polling...")
+        asyncio.create_task(dp.start_polling(bot))
 
     asyncio.create_task(monitor_matches())
     asyncio.create_task(keep_awake())
