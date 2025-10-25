@@ -13,12 +13,13 @@ from bs4 import BeautifulSoup
 import re
 import datetime
 import json
+import time
 
 # ---------------------- CONFIG ----------------------
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
 URL = "https://hcdinamo.by/tickets/"
-APP_URL = "https://hockey-monitor.onrender.com/version"
+APP_URL = "https://hockey-monitor.onrender.com/"  # Пинг на корневой маршрут
 MATCHES_CACHE_FILE = "matches_cache.json"
 
 # ---------------------- LOGGING ----------------------
@@ -32,6 +33,7 @@ app = Flask(__name__)
 matches_cache = []
 subscribers_file = "subscribers.txt"
 main_loop = None
+last_message_time = {}  # Для предотвращения дублирования сообщений
 
 # Словарь для месяцев
 MONTHS = {
@@ -101,13 +103,15 @@ def save_subscriber(user_id):
 
 # ---------------------- PARSING ----------------------
 async def fetch_matches():
-    retries = 3
+    retries = 5  # Увеличено до 5 попыток
     for attempt in range(retries):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(URL, timeout=15) as resp:
+                async with session.get(URL, timeout=20) as resp:  # Увеличен таймаут
                     if resp.status != 200:
-                        logging.warning(f"⚠️ Ошибка загрузки ({resp.status}) для URL: {URL}")
+                        logging.warning(f"⚠️ Ошибка загрузки ({resp.status}) для URL: {URL}, попытка {attempt + 1}")
+                        response_text = await resp.text()
+                        logging.warning(f"Ответ сервера: {response_text[:100]}...")
                         continue
                     html = await resp.text()
 
@@ -173,8 +177,8 @@ async def fetch_matches():
         except Exception as e:
             logging.error(f"Неожиданная ошибка при парсинге: {e}")
             return []
-    logging.error("Все попытки исчерпаны, возвращаем пустой список")
-    return []
+    logging.warning("Все попытки исчерпаны, возвращаем кэш")
+    return matches_cache  # Возвращаем кэш, если запросы не удались
 
 # ---------------------- MONITORING ----------------------
 async def monitor_matches():
@@ -195,7 +199,7 @@ async def monitor_matches():
             if added or removed:
                 msg = "⚡ Обновления матчей:\n"
                 if added:
-                    msg += "\n➕ Добавлено:\n" + "\n".join(added[:5])  # Ограничим до 5 матчей
+                    msg += "\n➕ Добавлено:\n" + "\n".join(added[:5])
                 if removed:
                     msg += "\n➖ Удалено:\n" + "\n".join(removed[:5])
 
@@ -242,13 +246,19 @@ async def keep_awake():
 async def handle_start(message: types.Message):
     try:
         user_id = message.from_user.id
+        current_time = time.time()
+        if user_id in last_message_time and current_time - last_message_time[user_id] < 60:
+            logging.info(f"Игнорируем повторный /start для {user_id}")
+            return
+        last_message_time[user_id] = current_time
+
         save_subscriber(user_id)
         matches = await fetch_matches()
         logging.info(f"handle_start: Найдено матчей для {user_id}: {len(matches)}")
         msg = f"✅ Вы подписаны на уведомления!\nНайдено матчей: {len(matches)}"
         await message.answer(msg)
         if matches:
-            for match in matches[:5]:  # Ограничим до 5 матчей
+            for match in matches[:5]:
                 await bot.send_message(user_id, match)
                 logging.info(f"Отправлен матч пользователю {user_id}: {match[:50]}...")
             if len(matches) > 5:
@@ -309,7 +319,7 @@ def index():
 
 @app.route("/version", methods=["GET"])
 def version():
-    return jsonify({"version": "2.3.9 - FIXED_START_ZERO_MATCHES"})
+    return jsonify({"version": "2.3.10 - FIXED_404_IN_START"})
 
 @app.route("/subscribers", methods=["GET"])
 def get_subscribers():
