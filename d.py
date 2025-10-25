@@ -3,6 +3,8 @@ import asyncio
 import logging
 import threading
 import requests
+import Update
+from aiogram.types 
 from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
@@ -169,13 +171,14 @@ async def monitor_matches():
 @app.post("/webhook")
 async def webhook():
     try:
-        update = request.json  # без await
+        data = request.json  # Flask возвращает dict
+        update = Update(**data)  # превращаем dict в Update
         await dp.feed_update(bot, update)
         return "OK"
     except Exception as e:
         logging.error(f"Ошибка webhook: {e}")
         return "Error", 500
-
+        
 @app.route("/")
 def index():
     return "OK", 200
