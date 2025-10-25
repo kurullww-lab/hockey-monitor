@@ -1,4 +1,4 @@
 aiohttp
-aiogram
+aiogram>=3.0
 flask
 beautifulsoup4
