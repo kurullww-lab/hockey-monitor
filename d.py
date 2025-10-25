@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import threading
-import requests
+import aiohttp
 from flask import Flask, request, jsonify
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
@@ -16,8 +16,8 @@ import datetime
 # ---------------------- CONFIG ----------------------
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
-URL = "https://hcdinamo.by/tickets/"  # Исправленный URL
-APP_URL = "https://hockey-monitor.onrender.com/version"  # Для самопинга
+URL = "https://hcdinamo.by/tickets/"
+APP_URL = "https://hockey-monitor.onrender.com/version"
 
 # ---------------------- LOGGING ----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -27,7 +27,7 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 dp = Dispatcher()
 app = Flask(__name__)
 
-matches_cache = set()
+matches_cache = []  # Изменено с set на list
 subscribers_file = "subscribers.txt"
 main_loop = None
 
@@ -72,65 +72,81 @@ def save_subscriber(user_id):
         f.write("\n".join(subs))
 
 # ---------------------- PARSING ----------------------
-def fetch_matches():
-    try:
-        response = requests.get(URL, timeout=10)
-        if response.status_code != 200:
-            logging.warning(f"⚠️ Ошибка загрузки ({response.status_code}) для URL: {URL}")
+async def fetch_matches():
+    retries = 3
+    for attempt in range(retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(URL, timeout=10) as resp:
+                    if resp.status != 200:
+                        logging.warning(f"⚠️ Ошибка загрузки ({resp.status}) для URL: {URL}")
+                        continue
+                    html = await resp.text()
+
+            soup = BeautifulSoup(html, 'html.parser')
+            match_items = soup.select("a.match-item")
+            logging.info(f"🎯 Найдено матчей: {len(match_items)}")
+
+            matches = []
+            for item in match_items:
+                day_elem = item.select_one(".match-day")
+                month_elem = item.select_one(".match-month")
+                time_elem = item.select_one(".match-times")
+                title_elem = item.select_one(".match-title")
+                ticket = item.select_one(".btn.tickets-w_t")
+                ticket_url = ticket.get("data-w_t") if ticket else None
+
+                day = day_elem.get_text(strip=True) if day_elem else "?"
+                month_raw = month_elem.get_text(strip=True).lower() if month_elem else "?"
+                time_ = time_elem.get_text(strip=True) if time_elem else "?"
+                title = title_elem.get_text(strip=True) if title_elem else "?"
+
+                logging.info(f"Raw date data: day={day}, month_raw={month_raw}")
+                if month_elem:
+                    logging.info(f"Raw HTML for month: {month_elem}")
+
+                month, weekday = "?", "?"
+                if month_raw != "?":
+                    match = re.match(r'^([а-я]{3,4})(?:,\s*([а-я]{2}))?$', month_raw, re.IGNORECASE)
+                    if match:
+                        month = match.group(1).lower()
+                        weekday = match.group(2).lower() if match.group(2) else "?"
+                    else:
+                        month = month_raw.lower()
+
+                full_month = MONTHS.get(month, month)
+                full_weekday = WEEKDAYS.get(weekday, weekday) if weekday != "?" else ""
+
+                date_formatted = f"{day} {full_month} 2025" if day != "?" and month != "?" else "Дата неизвестна"
+                if full_weekday:
+                    date_formatted += f", {full_weekday}"
+
+                venue_emoji = "🏟" if "Динамо-Минск" in title.split(" — ")[0] else "✈️"
+
+                msg = (
+                    f"📅 {date_formatted}\n"
+                    f"{venue_emoji} {title}\n"
+                    f"🕒 {time_}\n"
+                )
+                if ticket_url:
+                    msg += f"🎟 <a href='{ticket_url}'>Купить билет</a>"
+
+                # Создаём ключ для сравнения
+                match_key = f"{date_formatted}|{title}|{time_}"
+                matches.append((match_key, msg))
+            
+            # Сортируем по дате
+            matches.sort(key=lambda x: x[0])
+            return [msg for _, msg in matches]
+        except aiohttp.ClientError as e:
+            logging.error(f"Ошибка сети на попытке {attempt + 1}/{retries}: {e}")
+            if attempt < retries - 1:
+                await asyncio.sleep(5)
+        except Exception as e:
+            logging.error(f"Неожиданная ошибка при парсинге: {e}")
             return []
-
-        soup = BeautifulSoup(response.text, "html.parser")
-        match_items = soup.select("a.match-item")
-        logging.info(f"🎯 Найдено матчей: {len(match_items)}")
-
-        matches = []
-        for item in match_items:
-            day_elem = item.select_one(".match-day")
-            month_elem = item.select_one(".match-month")
-            time_elem = item.select_one(".match-times")
-            title_elem = item.select_one(".match-title")
-            ticket = item.select_one(".btn.tickets-w_t")
-            ticket_url = ticket.get("data-w_t") if ticket else None
-
-            day = day_elem.get_text(strip=True) if day_elem else "?"
-            month_raw = month_elem.get_text(strip=True).lower() if month_elem else "?"
-            time_ = time_elem.get_text(strip=True) if time_elem else "?"
-            title = title_elem.get_text(strip=True) if title_elem else "?"
-
-            logging.info(f"Raw date data: day={day}, month_raw={month_raw}")
-            if month_elem:
-                logging.info(f"Raw HTML for month: {month_elem}")
-
-            month, weekday = "?", "?"
-            if month_raw != "?":
-                match = re.match(r'^([а-я]{3,4})(?:,\s*([а-я]{2}))?$', month_raw)
-                if match:
-                    month = match.group(1)
-                    weekday = match.group(2) if match.group(2) else "?"
-                else:
-                    month = month_raw
-
-            full_month = MONTHS.get(month, month)
-            full_weekday = WEEKDAYS.get(weekday, weekday) if weekday != "?" else ""
-
-            date_formatted = f"{day} {full_month} 2025" if day != "?" and month != "?" else "Дата неизвестна"
-            if full_weekday:
-                date_formatted += f", {full_weekday}"
-
-            venue_emoji = "🏟" if "Динамо-Минск" in title.split(" — ")[0] else "✈️"
-
-            msg = (
-                f"📅 {date_formatted}\n"
-                f"{venue_emoji} {title}\n"
-                f"🕒 {time_}\n"
-            )
-            if ticket_url:
-                msg += f"🎟 <a href='{ticket_url}'>Купить билет</a>"
-            matches.append(msg)
-        return matches
-    except Exception as e:
-        logging.error(f"Ошибка при загрузке матчей: {e}")
-        return []
+    logging.error("Все попытки исчерпаны, возвращаем пустой список")
+    return []
 
 # ---------------------- MONITORING ----------------------
 async def monitor_matches():
@@ -140,9 +156,12 @@ async def monitor_matches():
 
     while True:
         try:
-            current_matches = set(fetch_matches())
-            added = current_matches - matches_cache
-            removed = matches_cache - current_matches
+            current_matches = await fetch_matches()
+            current_keys = {f"{msg}" for msg in current_matches}
+            cached_keys = {f"{msg}" for msg in matches_cache}
+
+            added = [msg for msg in current_matches if f"{msg}" not in cached_keys]
+            removed = [msg for msg in matches_cache if f"{msg}" not in current_keys]
 
             if added or removed:
                 msg = "⚡ Обновления матчей:\n"
@@ -156,6 +175,7 @@ async def monitor_matches():
                         await bot.send_message(user_id, msg)
                     except Exception as e:
                         logging.warning(f"Ошибка отправки {user_id}: {e}")
+                logging.info(f"🔔 Отправлены уведомления о {len(added)} новых и {len(removed)} удалённых матчах")
             else:
                 logging.info("✅ Изменений нет")
 
@@ -169,16 +189,17 @@ async def monitor_matches():
 async def keep_awake():
     current_interval = 840  # 14 минут
     min_interval = 300  # 5 минут при ошибках
-    await asyncio.sleep(10)
+    await asyncio.sleep(30)  # Увеличенная задержка на старт
     while True:
         try:
-            response = requests.get(APP_URL, timeout=5)
-            if response.status_code == 200:
-                logging.info(f"Keep-awake ping: status {response.status_code}")
-                current_interval = 840
-            else:
-                logging.warning(f"Keep-awake неудача: статус {response.status_code}")
-                current_interval = max(current_interval - 60, min_interval)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(APP_URL, timeout=5) as resp:
+                    if resp.status == 200:
+                        logging.info(f"Keep-awake ping: status {resp.status}")
+                        current_interval = 840
+                    else:
+                        logging.warning(f"Keep-awake неудача: статус {resp.status}")
+                        current_interval = max(current_interval - 60, min_interval)
         except Exception as e:
             logging.error(f"Keep-awake error: {e}")
             current_interval = max(current_interval - 60, min_interval)
@@ -189,7 +210,7 @@ async def keep_awake():
 async def handle_message(message: types.Message):
     if message.text == "/start":
         save_subscriber(message.from_user.id)
-        matches = fetch_matches()
+        matches = await fetch_matches()
         msg = f"✅ Вы подписаны на уведомления!\nНайдено матчей: {len(matches)}"
         if matches:
             for match in matches:
@@ -236,7 +257,7 @@ def index():
 
 @app.route("/version", methods=["GET"])
 def version():
-    return jsonify({"version": "2.3.5 - FIXED_404_AND_ENHANCED"})
+    return jsonify({"version": "2.3.6 - FIXED_NOTIFICATIONS_AND_PING"})
 
 # ---------------------- MAIN ----------------------
 async def main():
