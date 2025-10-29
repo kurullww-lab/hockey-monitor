@@ -1,4 +1,4 @@
-aiohttp
-aiogram>=3.0
-flask
-beautifulsoup4
+aiogram==3.7.0
+Flask==3.0.3
+requests==2.31.0
+beautifulsoup4==4.12.3
