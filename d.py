@@ -203,18 +203,33 @@ async def monitor_matches():
         await asyncio.sleep(CHECK_INTERVAL)
 
 # === Отправка уведомлений ===
-async def notify_all(messages, chat_ids=None):
-    subscribers = load_subscribers() if chat_ids is None else set(chat_ids)
-    if not subscribers:
-        logging.info("❕ Нет подписчиков для уведомления")
+async def notify_all(bot, added_matches, removed_matches, subscribers):
+    if not added_matches and not removed_matches:
         return
+
+    added_text = ""
+    removed_text = ""
+
+    if added_matches:
+        added_text = "➕ Добавлено:\n" + "\n\n".join(
+            f"📅 {m['date']}\n🏒 {m['title']}\n🕒 {m['time']}\n🎟 <a href='{m['link']}'>Купить билет</a>"
+            for m in added_matches
+        )
+
+    if removed_matches:
+        removed_text = "➖ Удалено:\n" + "\n\n".join(
+            f"📅 {m['date']}\n🏒 {m['title']}\n🕒 {m['time']}"
+            for m in removed_matches
+        )
+
+    text = "Обновления матчей:\n\n" + "\n\n".join(filter(None, [added_text, removed_text]))
+
     for chat_id in subscribers:
-        for msg in messages:
-            try:
-                await bot.send_message(chat_id, msg)
-                logging.info(f"Отправлено уведомление пользователю {chat_id}: {msg[:50]}...")
-            except Exception as e:
-                logging.error(f"Ошибка при отправке пользователю {chat_id}: {e}")
+        try:
+            await bot.send_message(chat_id, text, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception as e:
+            logging.error(f"Не удалось отправить сообщение {chat_id}: {e}")
+
 
 # === Команды ===
 @dp.message(CommandStart())
