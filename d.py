@@ -124,24 +124,27 @@ async def monitor_matches():
 # ==============================
 # 🚀 Команда /start
 # ==============================
-@dp.message(CommandStart())
-async def start_handler(message: Message):
+@dp.message(Command("start"))
+async def start_cmd(message: Message):
     user_id = message.from_user.id
+    subscribers = load_subscribers()
+
     if user_id not in subscribers:
-        subscribers.add(user_id)
-        await message.answer("📝 Вы подписались на уведомления о матчах Динамо Минск!")
+        subscribers.append(user_id)
+        save_subscribers(subscribers)
+        logger.info(f"📝 Новый подписчик: {user_id}")
 
+    await message.answer("✅ Вы подписаны на уведомления о матчах Динамо Минск!")
+
+    # Загружаем актуальные матчи
     matches = fetch_matches()
-    if not matches:
-        await message.answer("❌ На данный момент нет доступных матчей.")
-        return
+    logger.info(f"Возвращено матчей из fetch_matches: {len(matches)}")
 
-    # Формируем список всех матчей
-    text = "📅 Доступные матчи:\n\n" + "\n\n".join(
-        f"📅 {m['date']}\n🏒 {m['title']}\n🕒 {m['time']}\n🎟 <a href='{m['link']}'>Купить билет</a>"
-        for m in matches
-    )
-    await message.answer(text, disable_web_page_preview=True)
+    # Отправляем список пользователю
+    if matches:
+        await notify_all(matches, [], [user_id])
+    else:
+        await message.answer("❌ Сейчас нет доступных матчей.")
 
 
 # ==============================
