@@ -31,7 +31,7 @@ def index():
 
 @app.route('/version')
 def version():
-    return jsonify({"version": "2.5.0 - TICKET_TRACKING"})
+    return jsonify({"version": "2.5.1 - FIXED_VARIABLE_NAME"})
 
 @app.route('/subscribers')
 def get_subscribers():
@@ -214,18 +214,18 @@ async def monitor_matches():
                     for match_id in added_ids:
                         match = current_dict[match_id]
                         if match['has_ticket']:
-                            message = f"🎉 ПОЯВИЛСЯ НОВЫЙ МАТЧ С БИЛЕТАМИ!\n\n{format_match_message(match)}"
+                            notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ МАТЧ С БИЛЕТАМИ!\n\n{format_match_message(match)}"
                         else:
-                            message = f"🎉 ПОЯВИЛСЯ НОВЫЙ МАТЧ!\n\n{format_match_message(match, include_ticket=False)}\n\nБилеты пока не в продаже"
-                        await notify_all([message])
+                            notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ МАТЧ!\n\n{format_match_message(match, include_ticket=False)}\n\nБилеты пока не в продаже"
+                        await notify_all([notification_msg])
                         logging.info(f"✅ Добавлен матч: {match['title']} (билеты: {match['has_ticket']})")
                 
                 # Отслеживаем удаление матчей
                 if removed_ids:
                     for match_id in removed_ids:
                         match = last_dict[match_id]
-                        message = f"⏰ МАТЧ НАЧАЛСЯ!\n\n{format_match_message(match, include_ticket=False)}\n\nУдачи нашей команде! 🏒"
-                        await notify_all([message])
+                        notification_msg = f"⏰ МАТЧ НАЧАЛСЯ!\n\n{format_match_message(match, include_ticket=False)}\n\nУдачи нашей команде! 🏒"
+                        await notify_all([notification_msg])
                         logging.info(f"⏰ Матч начался: {match['title']}")
                 
                 # Отслеживаем появление билетов у существующих матчей
@@ -242,8 +242,8 @@ async def monitor_matches():
                 # Отправляем уведомления о появлении билетов
                 if ticket_updates:
                     for match in ticket_updates:
-                        message = f"🎫 ПОЯВИЛИСЬ БИЛЕТЫ НА МАТЧ!\n\n{format_match_message(match)}\n\nУспейте купить! 🏒"
-                        await notify_all([message])
+                        notification_msg = f"🎫 ПОЯВИЛИСЬ БИЛЕТЫ НА МАТЧ!\n\n{format_match_message(match)}\n\nУспейте купить! 🏒"
+                        await notify_all([notification_msg])
                         logging.info(f"🎫 Отправлено уведомление о билетах для: {match['title']}")
                 
                 if added_ids or removed_ids or ticket_updates:
@@ -292,8 +292,8 @@ async def start_cmd(message: types.Message):
     if matches:
         # Отправляем все матчи по одному сообщению каждый
         for match in matches:
-            message = format_match_message(match)
-            await message.answer(message)
+            match_message = format_match_message(match)
+            await message.answer(match_message)
     else:
         await message.answer("Пока нет доступных матчей.")
 
