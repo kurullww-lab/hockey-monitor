@@ -31,7 +31,7 @@ def index():
 
 @app.route('/version')
 def version():
-    return jsonify({"version": "2.4.0 - SMART_NOTIFICATIONS"})
+    return jsonify({"version": "2.5.0 - TICKET_TRACKING"})
 
 @app.route('/subscribers')
 def get_subscribers():
@@ -113,8 +113,6 @@ async def fetch_matches():
                 async with session.get(URL, timeout=20) as resp:
                     if resp.status != 200:
                         logging.warning(f"⚠️ Ошибка загрузки ({resp.status}) для URL: {URL}, попытка {attempt + 1}")
-                        response_text = await resp.text()
-                        logging.warning(f"Ответ сервера: {response_text[:100]}...")
                         continue
                     html = await resp.text()
 
@@ -152,32 +150,17 @@ async def fetch_matches():
                 if full_weekday:
                     date_formatted += f", {full_weekday}"
 
-                # Создаем сообщение с билетом
-                msg_with_ticket = (
-                    f"📅 {date_formatted}\n"
-                    f"🏒 {title}\n"
-                    f"🕒 {time_}\n"
-                )
-                if ticket_url:
-                    msg_with_ticket += f"🎟 <a href='{ticket_url}'>Купить билет</a>"
-                
-                # Создаем сообщение без билета (для удаленных матчей)
-                msg_without_ticket = (
-                    f"📅 {date_formatted}\n"
-                    f"🏒 {title}\n"
-                    f"🕒 {time_}\n"
-                    f"❌ Матч начался или отменён"
-                )
+                # Создаем уникальный идентификатор матча
+                match_id = f"{date_formatted}|{title}|{time_}"
 
-                # Сохраняем оба варианта
+                # Сохраняем данные матча
                 match_data = {
-                    "id": f"{date_formatted}|{title}|{time_}",
-                    "message_with_ticket": msg_with_ticket,
-                    "message_without_ticket": msg_without_ticket,
+                    "id": match_id,
                     "date": date_formatted,
                     "title": title,
                     "time": time_,
-                    "ticket_url": ticket_url
+                    "ticket_url": ticket_url,
+                    "has_ticket": ticket_url is not None
                 }
                 matches.append(match_data)
             
@@ -192,6 +175,19 @@ async def fetch_matches():
     logging.warning("Все попытки исчерпаны, возвращаем кэш")
     return last_matches
 
+# === Форматирование сообщений ===
+def format_match_message(match, include_ticket=True):
+    msg = (
+        f"📅 {match['date']}\n"
+        f"🏒 {match['title']}\n"
+        f"🕒 {match['time']}\n"
+    )
+    if include_ticket and match['ticket_url']:
+        msg += f"🎟 <a href='{match['ticket_url']}'>Купить билет</a>"
+    elif not include_ticket:
+        msg += f"❌ Матч начался или отменён"
+    return msg
+
 # === Проверка обновлений ===
 async def monitor_matches():
     global last_matches
@@ -202,29 +198,57 @@ async def monitor_matches():
             current_matches = await fetch_matches()
             
             if last_matches:
-                # Сравниваем по ID матчей
-                current_ids = {match["id"] for match in current_matches}
-                last_ids = {match["id"] for match in last_matches}
+                # Создаем словари для быстрого поиска
+                current_dict = {match["id"]: match for match in current_matches}
+                last_dict = {match["id"]: match for match in last_matches}
+                
+                current_ids = set(current_dict.keys())
+                last_ids = set(last_dict.keys())
                 
                 added_ids = current_ids - last_ids
                 removed_ids = last_ids - current_ids
+                common_ids = current_ids & last_ids
                 
-                # Отправляем отдельные уведомления для каждого изменения
+                # Отслеживаем появление новых матчей
                 if added_ids:
                     for match_id in added_ids:
-                        match = next(m for m in current_matches if m["id"] == match_id)
-                        await notify_all([f"🎉 ПОЯВИЛСЯ НОВЫЙ МАТЧ!\n\n{match['message_with_ticket']}"])
-                        logging.info(f"✅ Добавлен матч: {match['title']}")
+                        match = current_dict[match_id]
+                        if match['has_ticket']:
+                            message = f"🎉 ПОЯВИЛСЯ НОВЫЙ МАТЧ С БИЛЕТАМИ!\n\n{format_match_message(match)}"
+                        else:
+                            message = f"🎉 ПОЯВИЛСЯ НОВЫЙ МАТЧ!\n\n{format_match_message(match, include_ticket=False)}\n\nБилеты пока не в продаже"
+                        await notify_all([message])
+                        logging.info(f"✅ Добавлен матч: {match['title']} (билеты: {match['has_ticket']})")
                 
+                # Отслеживаем удаление матчей
                 if removed_ids:
                     for match_id in removed_ids:
-                        match = next(m for m in last_matches if m["id"] == match_id)
-                        await notify_all([f"⏰ МАТЧ НАЧАЛСЯ!\n\n{match['message_without_ticket']}\n\nУдачи нашей команде! 🏒"])
+                        match = last_dict[match_id]
+                        message = f"⏰ МАТЧ НАЧАЛСЯ!\n\n{format_match_message(match, include_ticket=False)}\n\nУдачи нашей команде! 🏒"
+                        await notify_all([message])
                         logging.info(f"⏰ Матч начался: {match['title']}")
                 
-                if added_ids or removed_ids:
+                # Отслеживаем появление билетов у существующих матчей
+                ticket_updates = []
+                for match_id in common_ids:
+                    current_match = current_dict[match_id]
+                    last_match = last_dict[match_id]
+                    
+                    # Если билеты появились (были None, стали есть URL)
+                    if not last_match['has_ticket'] and current_match['has_ticket']:
+                        ticket_updates.append(current_match)
+                        logging.info(f"🎫 Появились билеты для матча: {current_match['title']}")
+                
+                # Отправляем уведомления о появлении билетов
+                if ticket_updates:
+                    for match in ticket_updates:
+                        message = f"🎫 ПОЯВИЛИСЬ БИЛЕТЫ НА МАТЧ!\n\n{format_match_message(match)}\n\nУспейте купить! 🏒"
+                        await notify_all([message])
+                        logging.info(f"🎫 Отправлено уведомление о билетах для: {match['title']}")
+                
+                if added_ids or removed_ids or ticket_updates:
                     last_matches = current_matches
-                    logging.info(f"🔔 Отправлены уведомления о {len(added_ids)} новых и {len(removed_ids)} удалённых матчах")
+                    logging.info(f"🔔 Изменения: +{len(added_ids)} новых, -{len(removed_ids)} удалённых, 🎫{len(ticket_updates)} с билетами")
                 else:
                     logging.info("✅ Изменений нет")
             else:
@@ -268,7 +292,8 @@ async def start_cmd(message: types.Message):
     if matches:
         # Отправляем все матчи по одному сообщению каждый
         for match in matches:
-            await message.answer(match["message_with_ticket"])
+            message = format_match_message(match)
+            await message.answer(message)
     else:
         await message.answer("Пока нет доступных матчей.")
 
@@ -289,10 +314,12 @@ async def stop_cmd(message: types.Message):
 @dp.message(Command("status"))
 async def status_cmd(message: types.Message):
     last_check = time.strftime("%Y-%m-%d %H:%M:%S")
+    matches_with_tickets = sum(1 for match in last_matches if match['has_ticket']) if last_matches else 0
     status_msg = (
         f"🛠 Статус бота:\n"
         f"👥 Подписчиков: {len(load_subscribers())}\n"
-        f"🏒 Матчей в кэше: {len(last_matches)}\n"
+        f"🏒 Всего матчей: {len(last_matches)}\n"
+        f"🎫 С билетами: {matches_with_tickets}\n"
         f"⏰ Последняя проверка: {last_check}\n"
         f"🔄 Интервал проверки: {CHECK_INTERVAL} сек"
     )
@@ -309,10 +336,10 @@ async def keep_awake():
                 async with session.get(APP_URL, timeout=5) as resp:
                     response_text = await resp.text()
                     if resp.status == 200:
-                        logging.info(f"Keep-awake ping: status {resp.status}, response: {response_text[:50]}...")
+                        logging.info(f"Keep-awake ping: status {resp.status}")
                         current_interval = 840
                     else:
-                        logging.warning(f"Keep-awake неудача: статус {resp.status}, response: {response_text[:50]}...")
+                        logging.warning(f"Keep-awake неудача: статус {resp.status}")
                         current_interval = max(current_interval - 60, min_interval)
         except Exception as e:
             logging.error(f"Keep-awake error: {e}")
