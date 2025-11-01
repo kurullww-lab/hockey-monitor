@@ -31,7 +31,7 @@ def index():
 
 @app.route('/version')
 def version():
-    return jsonify({"version": "2.5.1 - FIXED_VARIABLE_NAME"})
+    return jsonify({"version": "2.6.1 - NO_AWAY_TICKETS"})
 
 @app.route('/subscribers')
 def get_subscribers():
@@ -128,6 +128,11 @@ async def fetch_matches():
                 title_elem = item.select_one(".match-title")
                 ticket = item.select_one(".btn.tickets-w_t")
                 ticket_url = ticket.get("data-w_t") if ticket else None
+                away_match_elem = item.select_one(".match-mark")
+                
+                # Определяем тип матча
+                is_away_match = away_match_elem is not None
+                match_type = "🟡 Выездной" if is_away_match else "🔵 Домашний"
 
                 day = day_elem.get_text(strip=True) if day_elem else "?"
                 month_raw = month_elem.get_text(strip=True).lower() if month_elem else "?"
@@ -160,7 +165,9 @@ async def fetch_matches():
                     "title": title,
                     "time": time_,
                     "ticket_url": ticket_url,
-                    "has_ticket": ticket_url is not None
+                    "has_ticket": ticket_url is not None,
+                    "is_away_match": is_away_match,
+                    "match_type": match_type
                 }
                 matches.append(match_data)
             
@@ -178,6 +185,7 @@ async def fetch_matches():
 # === Форматирование сообщений ===
 def format_match_message(match, include_ticket=True):
     msg = (
+        f"{match['match_type']} матч\n"
         f"📅 {match['date']}\n"
         f"🏒 {match['title']}\n"
         f"🕒 {match['time']}\n"
@@ -214,37 +222,46 @@ async def monitor_matches():
                     for match_id in added_ids:
                         match = current_dict[match_id]
                         if match['has_ticket']:
-                            notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ МАТЧ С БИЛЕТАМИ!\n\n{format_match_message(match)}"
+                            if match['is_away_match']:
+                                notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ ВЫЕЗДНОЙ МАТЧ С БИЛЕТАМИ!\n\n{format_match_message(match)}"
+                            else:
+                                notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ ДОМАШНИЙ МАТЧ С БИЛЕТАМИ!\n\n{format_match_message(match)}"
                         else:
-                            notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ МАТЧ!\n\n{format_match_message(match, include_ticket=False)}\n\nБилеты пока не в продаже"
+                            if match['is_away_match']:
+                                notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ ВЫЕЗДНОЙ МАТЧ!\n\n{format_match_message(match, include_ticket=False)}\n\nБилеты пока не в продаже"
+                            else:
+                                notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ ДОМАШНИЙ МАТЧ!\n\n{format_match_message(match, include_ticket=False)}\n\nБилеты пока не в продаже"
                         await notify_all([notification_msg])
-                        logging.info(f"✅ Добавлен матч: {match['title']} (билеты: {match['has_ticket']})")
+                        logging.info(f"✅ Добавлен матч: {match['title']} (тип: {match['match_type']}, билеты: {match['has_ticket']})")
                 
                 # Отслеживаем удаление матчей
                 if removed_ids:
                     for match_id in removed_ids:
                         match = last_dict[match_id]
-                        notification_msg = f"⏰ МАТЧ НАЧАЛСЯ!\n\n{format_match_message(match, include_ticket=False)}\n\nУдачи нашей команде! 🏒"
+                        if match['is_away_match']:
+                            notification_msg = f"⏰ ВЫЕЗДНОЙ МАТЧ НАЧАЛСЯ!\n\n{format_match_message(match, include_ticket=False)}\n\nУдачи нашей команде! 🏒"
+                        else:
+                            notification_msg = f"⏰ ДОМАШНИЙ МАТЧ НАЧАЛСЯ!\n\n{format_match_message(match, include_ticket=False)}\n\nУдачи нашей команде! 🏒"
                         await notify_all([notification_msg])
-                        logging.info(f"⏰ Матч начался: {match['title']}")
+                        logging.info(f"⏰ Матч начался: {match['title']} (тип: {match['match_type']})")
                 
-                # Отслеживаем появление билетов у существующих матчей
+                # Отслеживаем появление билетов у существующих матчей (ТОЛЬКО ДЛЯ ДОМАШНИХ)
                 ticket_updates = []
                 for match_id in common_ids:
                     current_match = current_dict[match_id]
                     last_match = last_dict[match_id]
                     
-                    # Если билеты появились (были None, стали есть URL)
-                    if not last_match['has_ticket'] and current_match['has_ticket']:
+                    # Если билеты появились (были None, стали есть URL) И это домашний матч
+                    if not last_match['has_ticket'] and current_match['has_ticket'] and not current_match['is_away_match']:
                         ticket_updates.append(current_match)
-                        logging.info(f"🎫 Появились билеты для матча: {current_match['title']}")
+                        logging.info(f"🎫 Появились билеты для домашнего матча: {current_match['title']}")
                 
-                # Отправляем уведомления о появлении билетов
+                # Отправляем уведомления о появлении билетов (ТОЛЬКО ДЛЯ ДОМАШНИХ)
                 if ticket_updates:
                     for match in ticket_updates:
-                        notification_msg = f"🎫 ПОЯВИЛИСЬ БИЛЕТЫ НА МАТЧ!\n\n{format_match_message(match)}\n\nУспейте купить! 🏒"
+                        notification_msg = f"🎫 ПОЯВИЛИСЬ БИЛЕТЫ НА ДОМАШНИЙ МАТЧ!\n\n{format_match_message(match)}\n\nУспейте купить! 🏒"
                         await notify_all([notification_msg])
-                        logging.info(f"🎫 Отправлено уведомление о билетах для: {match['title']}")
+                        logging.info(f"🎫 Отправлено уведомление о билетах для домашнего матча: {match['title']}")
                 
                 if added_ids or removed_ids or ticket_updates:
                     last_matches = current_matches
@@ -315,10 +332,15 @@ async def stop_cmd(message: types.Message):
 async def status_cmd(message: types.Message):
     last_check = time.strftime("%Y-%m-%d %H:%M:%S")
     matches_with_tickets = sum(1 for match in last_matches if match['has_ticket']) if last_matches else 0
+    home_matches = sum(1 for match in last_matches if not match['is_away_match']) if last_matches else 0
+    away_matches = sum(1 for match in last_matches if match['is_away_match']) if last_matches else 0
+    
     status_msg = (
         f"🛠 Статус бота:\n"
         f"👥 Подписчиков: {len(load_subscribers())}\n"
         f"🏒 Всего матчей: {len(last_matches)}\n"
+        f"🔵 Домашних: {home_matches}\n"
+        f"🟡 Выездных: {away_matches}\n"
         f"🎫 С билетами: {matches_with_tickets}\n"
         f"⏰ Последняя проверка: {last_check}\n"
         f"🔄 Интервал проверки: {CHECK_INTERVAL} сек"
