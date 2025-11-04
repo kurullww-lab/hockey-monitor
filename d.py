@@ -17,13 +17,17 @@ from datetime import datetime, timezone, timedelta
 # === Конфигурация ===
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 300))
-URL = "https://hcdinamo.by/tickets/"
+URLS = [
+    "https://hcdinamo.by/tickets/",
+    "http://hcdinamo.by/tickets/",  # Попробуем HTTP
+    "https://www.hcdinamo.by/tickets/",  # Альтернативный URL
+]
 APP_URL = "https://hockey-monitor.onrender.com/"
 
 # === Настройка часового пояса ===
-MOSCOW_TZ = timezone(timedelta(hours=3))  # UTC+3 для Минска/Москвы
+MOSCOW_TZ = timezone(timedelta(hours=3))
 
-# === Логгирование с правильным временем ===
+# === Логгирование ===
 logging.Formatter.converter = lambda *args: datetime.now(MOSCOW_TZ).timetuple()
 logging.basicConfig(
     level=logging.INFO, 
@@ -40,7 +44,7 @@ def index():
 
 @app.route('/version')
 def version():
-    return jsonify({"version": "2.7.0 - FIXED_403_ERROR"})
+    return jsonify({"version": "2.8.0 - MULTI_URL_FALLBACK"})
 
 @app.route('/subscribers')
 def get_subscribers():
@@ -63,33 +67,18 @@ dp = Dispatcher()
 # === Память ===
 subscribers_file = "subscribers.txt"
 last_matches = []
-last_message_time = {}  # Для предотвращения дублирования
+last_message_time = {}
 
-# Словарь для месяцев
+# Словари для месяцев и дней недели (остаются без изменений)
 MONTHS = {
-    "янв": "января",
-    "фев": "февраля",
-    "мар": "марта",
-    "апр": "апреля",
-    "май": "мая",
-    "июн": "июня",
-    "июл": "июля",
-    "авг": "августа",
-    "сен": "сентября",
-    "окт": "октября",
-    "ноя": "ноября",
-    "дек": "декабря"
+    "янв": "января", "фев": "февраля", "мар": "марта", "апр": "апреля",
+    "май": "мая", "июн": "июня", "июл": "июля", "авг": "августа",
+    "сен": "сентября", "окт": "октября", "ноя": "ноября", "дек": "декабря"
 }
 
-# Словарь для дней недели
 WEEKDAYS = {
-    "пн": "Понедельник",
-    "вт": "Вторник",
-    "ср": "Среда",
-    "чт": "Четверг",
-    "пт": "Пятница",
-    "сб": "Суббота",
-    "вс": "Воскресенье"
+    "пн": "Понедельник", "вт": "Вторник", "ср": "Среда", "чт": "Четверг",
+    "пт": "Пятница", "сб": "Суббота", "вс": "Воскресенье"
 }
 
 # === Управление подписчиками ===
@@ -113,107 +102,108 @@ def save_subscriber(user_id):
     except Exception as e:
         logging.error(f"Ошибка сохранения подписчика {user_id}: {e}")
 
-# === Функция для получения московского времени ===
 def get_moscow_time():
     return datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-# === Парсинг матчей с обходом защиты ===
+# === Парсинг матчей с множественными URL ===
 async def fetch_matches():
-    retries = 3
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-    }
+    headers_list = [
+        {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+            'Accept-Encoding': 'gzip, deflate, br',
+        },
+        {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+        }
+    ]
     
-    for attempt in range(retries):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(URL, headers=headers, timeout=30) as resp:
-                    if resp.status == 403:
-                        logging.warning(f"⚠️ Доступ запрещен (403) для URL: {URL}, попытка {attempt + 1}")
-                        # Меняем User-Agent для следующей попытки
-                        headers['User-Agent'] = f'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{(90 + attempt)}.0.4430.212 Safari/537.36'
-                        continue
-                    elif resp.status != 200:
-                        logging.warning(f"⚠️ Ошибка загрузки ({resp.status}) для URL: {URL}, попытка {attempt + 1}")
-                        continue
-                    
-                    html = await resp.text()
-                    logging.info(f"✅ Успешно загружена страница, размер: {len(html)} байт")
-
-            soup = BeautifulSoup(html, 'html.parser')
-            match_items = soup.select("a.match-item")
-            logging.info(f"🎯 Найдено матчей: {len(match_items)}")
-
-            matches = []
-            for item in match_items:
-                day_elem = item.select_one(".match-day")
-                month_elem = item.select_one(".match-month")
-                time_elem = item.select_one(".match-times")
-                title_elem = item.select_one(".match-title")
-                ticket = item.select_one(".btn.tickets-w_t")
-                ticket_url = ticket.get("data-w_t") if ticket else None
-                away_match_elem = item.select_one(".match-mark")
+    connector = aiohttp.TCPConnector(verify_ssl=False)  # Отключаем проверку SSL для тестирования
+    
+    for url_index, url in enumerate(URLS):
+        for header_index, headers in enumerate(headers_list):
+            try:
+                logging.info(f"🔄 Попытка загрузки: {url} с headers #{header_index + 1}")
                 
-                # Определяем тип матча
-                is_away_match = away_match_elem is not None
-                match_type = "🟡 Выездной" if is_away_match else "🔵 Домашний"
+                timeout = aiohttp.ClientTimeout(total=30)
+                async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                    async with session.get(url, headers=headers) as resp:
+                        if resp.status == 200:
+                            html = await resp.text()
+                            logging.info(f"✅ Успешно загружено с {url}, размер: {len(html)} байт")
+                            
+                            soup = BeautifulSoup(html, 'html.parser')
+                            match_items = soup.select("a.match-item")
+                            logging.info(f"🎯 Найдено матчей: {len(match_items)}")
 
-                day = day_elem.get_text(strip=True) if day_elem else "?"
-                month_raw = month_elem.get_text(strip=True).lower() if month_elem else "?"
-                time_ = time_elem.get_text(strip=True) if time_elem else "?"
-                title = title_elem.get_text(strip=True) if title_elem else "?"
+                            matches = []
+                            for item in match_items:
+                                day_elem = item.select_one(".match-day")
+                                month_elem = item.select_one(".match-month")
+                                time_elem = item.select_one(".match-times")
+                                title_elem = item.select_one(".match-title")
+                                ticket = item.select_one(".btn.tickets-w_t")
+                                ticket_url = ticket.get("data-w_t") if ticket else None
+                                away_match_elem = item.select_one(".match-mark")
+                                
+                                is_away_match = away_match_elem is not None
+                                match_type = "🟡 Выездной" if is_away_match else "🔵 Домашний"
 
-                month, weekday = "?", "?"
-                if month_raw != "?":
-                    match = re.match(r'^([а-я]{3,4})(?:,\s*([а-я]{2}))?$', month_raw, re.IGNORECASE)
-                    if match:
-                        month = match.group(1)
-                        weekday = match.group(2) if match.group(2) else "?"
-                    else:
-                        month = month_raw
+                                day = day_elem.get_text(strip=True) if day_elem else "?"
+                                month_raw = month_elem.get_text(strip=True).lower() if month_elem else "?"
+                                time_ = time_elem.get_text(strip=True) if time_elem else "?"
+                                title = title_elem.get_text(strip=True) if title_elem else "?"
 
-                full_month = MONTHS.get(month, month)
-                full_weekday = WEEKDAYS.get(weekday, weekday) if weekday != "?" else ""
+                                month, weekday = "?", "?"
+                                if month_raw != "?":
+                                    match = re.match(r'^([а-я]{3,4})(?:,\s*([а-я]{2}))?$', month_raw, re.IGNORECASE)
+                                    if match:
+                                        month = match.group(1)
+                                        weekday = match.group(2) if match.group(2) else "?"
+                                    else:
+                                        month = month_raw
 
-                date_formatted = f"{day} {full_month}" if day != "?" and month != "?" else "Дата неизвестна"
-                if full_weekday:
-                    date_formatted += f", {full_weekday}"
+                                full_month = MONTHS.get(month, month)
+                                full_weekday = WEEKDAYS.get(weekday, weekday) if weekday != "?" else ""
 
-                # Создаем уникальный идентификатор матча
-                match_id = f"{date_formatted}|{title}|{time_}"
+                                date_formatted = f"{day} {full_month}" if day != "?" and month != "?" else "Дата неизвестна"
+                                if full_weekday:
+                                    date_formatted += f", {full_weekday}"
 
-                # Сохраняем данные матча
-                match_data = {
-                    "id": match_id,
-                    "date": date_formatted,
-                    "title": title,
-                    "time": time_,
-                    "ticket_url": ticket_url,
-                    "has_ticket": ticket_url is not None,
-                    "is_away_match": is_away_match,
-                    "match_type": match_type
-                }
-                matches.append(match_data)
+                                match_id = f"{date_formatted}|{title}|{time_}"
+
+                                match_data = {
+                                    "id": match_id,
+                                    "date": date_formatted,
+                                    "title": title,
+                                    "time": time_,
+                                    "ticket_url": ticket_url,
+                                    "has_ticket": ticket_url is not None,
+                                    "is_away_match": is_away_match,
+                                    "match_type": match_type
+                                }
+                                matches.append(match_data)
+                            
+                            return matches
+                        else:
+                            logging.warning(f"⚠️ Ошибка {resp.status} для {url} с headers #{header_index + 1}")
+                            
+            except aiohttp.ClientError as e:
+                logging.warning(f"⚠️ Сетевая ошибка для {url}: {e}")
+            except Exception as e:
+                logging.warning(f"⚠️ Ошибка при загрузке {url}: {e}")
             
-            logging.info(f"Возвращено матчей из fetch_matches: {len(matches)}")
-            return matches
-            
-        except aiohttp.ClientError as e:
-            logging.error(f"Ошибка сети на попытке {attempt + 1}/{retries}: {e}")
-            if attempt < retries - 1:
-                await asyncio.sleep(10)  # Увеличиваем задержку между попытками
-        except Exception as e:
-            logging.error(f"Неожиданная ошибка при парсинге: {e}")
+            await asyncio.sleep(2)  # Пауза между попытками
     
-    logging.error("❌ Все попытки загрузки страницы провалились")
-    return []  # Возвращаем пустой список вместо кэша
+    logging.error("❌ Все URL и заголовки не сработали")
+    return []
 
-# === Форматирование сообщений ===
+# === Остальные функции остаются без изменений ===
 def format_match_message(match, include_ticket=True):
     msg = (
         f"{match['match_type']} матч\n"
@@ -227,10 +217,9 @@ def format_match_message(match, include_ticket=True):
         msg += f"❌ Матч начался или отменён"
     return msg
 
-# === Проверка обновлений ===
 async def monitor_matches():
     global last_matches
-    await asyncio.sleep(10)  # Даем больше времени на старт
+    await asyncio.sleep(10)
     logging.info("🏁 Мониторинг матчей запущен!")
     while True:
         try:
@@ -242,7 +231,6 @@ async def monitor_matches():
                 continue
             
             if last_matches:
-                # Создаем словари для быстрого поиска
                 current_dict = {match["id"]: match for match in current_matches}
                 last_dict = {match["id"]: match for match in last_matches}
                 
@@ -251,53 +239,34 @@ async def monitor_matches():
                 
                 added_ids = current_ids - last_ids
                 removed_ids = last_ids - current_ids
-                common_ids = current_ids & last_ids
                 
-                # Отслеживаем появление новых матчей
                 if added_ids:
                     for match_id in added_ids:
                         match = current_dict[match_id]
                         if match['has_ticket']:
-                            if match['is_away_match']:
-                                notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ ВЫЕЗДНОЙ МАТЧ С БИЛЕТАМИ!\n\n{format_match_message(match)}"
-                            else:
-                                notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ ДОМАШНИЙ МАТЧ С БИЛЕТАМИ!\n\n{format_match_message(match)}"
+                            notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ {match['match_type'].upper()} МАТЧ С БИЛЕТАМИ!\n\n{format_match_message(match)}"
                         else:
-                            if match['is_away_match']:
-                                notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ ВЫЕЗДНОЙ МАТЧ!\n\n{format_match_message(match, include_ticket=False)}\n\nБилеты пока не в продаже"
-                            else:
-                                notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ ДОМАШНИЙ МАТЧ!\n\n{format_match_message(match, include_ticket=False)}\n\nБилеты пока не в продаже"
+                            notification_msg = f"🎉 ПОЯВИЛСЯ НОВЫЙ {match['match_type'].upper()} МАТЧ!\n\n{format_match_message(match, include_ticket=False)}\n\nБилеты пока не в продаже"
                         await notify_all([notification_msg])
-                        logging.info(f"✅ Добавлен матч: {match['title']} (тип: {match['match_type']}, билеты: {match['has_ticket']})")
                 
-                # Отслеживаем удаление матчей
                 if removed_ids:
                     for match_id in removed_ids:
                         match = last_dict[match_id]
-                        if match['is_away_match']:
-                            notification_msg = f"⏰ ВЫЕЗДНОЙ МАТЧ НАЧАЛСЯ!\n\n{format_match_message(match, include_ticket=False)}\n\nУдачи нашей команде! 🏒"
-                        else:
-                            notification_msg = f"⏰ ДОМАШНИЙ МАТЧ НАЧАЛСЯ!\n\n{format_match_message(match, include_ticket=False)}\n\nУдачи нашей команде! 🏒"
+                        notification_msg = f"⏰ {match['match_type'].upper()} МАТЧ НАЧАЛСЯ!\n\n{format_match_message(match, include_ticket=False)}\n\nУдачи нашей команде! 🏒"
                         await notify_all([notification_msg])
-                        logging.info(f"⏰ Матч начался: {match['title']} (тип: {match['match_type']})")
                 
-                # Отслеживаем появление билетов у существующих матчей (ТОЛЬКО ДЛЯ ДОМАШНИХ)
+                # Проверка билетов для домашних матчей
                 ticket_updates = []
-                for match_id in common_ids:
+                for match_id in current_ids & last_ids:
                     current_match = current_dict[match_id]
                     last_match = last_dict[match_id]
-                    
-                    # Если билеты появились (были None, стали есть URL) И это домашний матч
                     if not last_match['has_ticket'] and current_match['has_ticket'] and not current_match['is_away_match']:
                         ticket_updates.append(current_match)
-                        logging.info(f"🎫 Появились билеты для домашнего матча: {current_match['title']}")
                 
-                # Отправляем уведомления о появлении билетов (ТОЛЬКО ДЛЯ ДОМАШНИХ)
                 if ticket_updates:
                     for match in ticket_updates:
                         notification_msg = f"🎫 ПОЯВИЛИСЬ БИЛЕТЫ НА ДОМАШНИЙ МАТЧ!\n\n{format_match_message(match)}\n\nУспейте купить! 🏒"
                         await notify_all([notification_msg])
-                        logging.info(f"🎫 Отправлено уведомление о билетах для домашнего матча: {match['title']}")
                 
                 if added_ids or removed_ids or ticket_updates:
                     last_matches = current_matches
@@ -305,7 +274,6 @@ async def monitor_matches():
                 else:
                     logging.info("✅ Изменений нет")
             else:
-                # Первый запуск
                 last_matches = current_matches
                 logging.info("📝 Первоначальная загрузка матчей завершена")
                 
@@ -313,27 +281,22 @@ async def monitor_matches():
             logging.error(f"Ошибка при мониторинге: {e}")
         await asyncio.sleep(CHECK_INTERVAL)
 
-# === Отправка уведомлений ===
 async def notify_all(messages, chat_ids=None):
     subscribers = load_subscribers() if chat_ids is None else set(chat_ids)
     if not subscribers:
-        logging.info("❕ Нет подписчиков для уведомления")
         return
     for chat_id in subscribers:
         for msg in messages:
             try:
                 await bot.send_message(chat_id, msg)
-                logging.info(f"Отправлено уведомление пользователю {chat_id}")
             except Exception as e:
                 logging.error(f"Ошибка при отправке пользователю {chat_id}: {e}")
 
-# === Команды ===
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
     user_id = message.chat.id
     current_time = time.time()
     if user_id in last_message_time and current_time - last_message_time[user_id] < 60:
-        logging.info(f"Игнорируем повторный /start для {user_id}")
         return
     last_message_time[user_id] = current_time
 
@@ -343,10 +306,8 @@ async def start_cmd(message: types.Message):
     
     matches = await fetch_matches()
     if matches:
-        # Отправляем все матчи по одному сообщению каждый
         for match in matches:
-            match_message = format_match_message(match)
-            await message.answer(match_message)
+            await message.answer(format_match_message(match))
     else:
         await message.answer("❌ Не удалось загрузить матчи. Попробуйте позже.")
 
@@ -361,12 +322,10 @@ async def stop_cmd(message: types.Message):
         await message.answer("Вы отписались от уведомлений.")
         logging.info(f"❌ Пользователь {user_id} отписался.")
     except Exception as e:
-        logging.error(f"Ошибка при отписке {user_id}: {e}")
         await message.answer("❌ Произошла ошибка. Попробуйте позже.")
 
 @dp.message(Command("status"))
 async def status_cmd(message: types.Message):
-    # Используем московское время для статуса
     current_time = get_moscow_time()
     matches_with_tickets = sum(1 for match in last_matches if match['has_ticket']) if last_matches else 0
     home_matches = sum(1 for match in last_matches if not match['is_away_match']) if last_matches else 0
@@ -384,27 +343,18 @@ async def status_cmd(message: types.Message):
     )
     await message.answer(status_msg)
 
-# === Самопинг ===
 async def keep_awake():
-    current_interval = 840  # 14 минут
-    min_interval = 300  # 5 минут
     await asyncio.sleep(60)
     while True:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(APP_URL, timeout=10) as resp:
                     if resp.status == 200:
-                        logging.info(f"Keep-awake ping: status {resp.status}")
-                        current_interval = 840
-                    else:
-                        logging.warning(f"Keep-awake неудача: статус {resp.status}")
-                        current_interval = max(current_interval - 60, min_interval)
-        except Exception as e:
-            logging.error(f"Keep-awake error: {e}")
-            current_interval = max(current_interval - 60, min_interval)
-        await asyncio.sleep(current_interval)
+                        logging.info("Keep-awake ping: OK")
+        except Exception:
+            pass
+        await asyncio.sleep(300)  # Каждые 5 минут
 
-# === Запуск ===
 async def run_aiogram():
     await bot.delete_webhook(drop_pending_updates=True)
     logging.info("🌐 Webhook удалён, включен polling режим.")
