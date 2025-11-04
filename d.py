@@ -12,6 +12,7 @@ from flask import Flask, jsonify
 import re
 import json
 import time
+from datetime import datetime, timezone, timedelta
 
 # === Конфигурация ===
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -19,8 +20,16 @@ CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 300))
 URL = "https://hcdinamo.by/tickets/"
 APP_URL = "https://hockey-monitor.onrender.com/"
 
-# === Логгирование ===
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# === Настройка часового пояса ===
+MOSCOW_TZ = timezone(timedelta(hours=3))  # UTC+3 для Минска/Москвы
+
+# === Логгирование с правильным временем ===
+logging.Formatter.converter = lambda *args: datetime.now(MOSCOW_TZ).timetuple()
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 # === Flask ===
 app = Flask(__name__)
@@ -31,7 +40,7 @@ def index():
 
 @app.route('/version')
 def version():
-    return jsonify({"version": "2.6.1 - NO_AWAY_TICKETS"})
+    return jsonify({"version": "2.7.0 - FIXED_403_ERROR"})
 
 @app.route('/subscribers')
 def get_subscribers():
@@ -104,17 +113,37 @@ def save_subscriber(user_id):
     except Exception as e:
         logging.error(f"Ошибка сохранения подписчика {user_id}: {e}")
 
-# === Парсинг матчей ===
+# === Функция для получения московского времени ===
+def get_moscow_time():
+    return datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+# === Парсинг матчей с обходом защиты ===
 async def fetch_matches():
-    retries = 5
+    retries = 3
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+    
     for attempt in range(retries):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(URL, timeout=20) as resp:
-                    if resp.status != 200:
+                async with session.get(URL, headers=headers, timeout=30) as resp:
+                    if resp.status == 403:
+                        logging.warning(f"⚠️ Доступ запрещен (403) для URL: {URL}, попытка {attempt + 1}")
+                        # Меняем User-Agent для следующей попытки
+                        headers['User-Agent'] = f'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{(90 + attempt)}.0.4430.212 Safari/537.36'
+                        continue
+                    elif resp.status != 200:
                         logging.warning(f"⚠️ Ошибка загрузки ({resp.status}) для URL: {URL}, попытка {attempt + 1}")
                         continue
+                    
                     html = await resp.text()
+                    logging.info(f"✅ Успешно загружена страница, размер: {len(html)} байт")
 
             soup = BeautifulSoup(html, 'html.parser')
             match_items = soup.select("a.match-item")
@@ -173,14 +202,16 @@ async def fetch_matches():
             
             logging.info(f"Возвращено матчей из fetch_matches: {len(matches)}")
             return matches
+            
         except aiohttp.ClientError as e:
             logging.error(f"Ошибка сети на попытке {attempt + 1}/{retries}: {e}")
             if attempt < retries - 1:
-                await asyncio.sleep(5)
+                await asyncio.sleep(10)  # Увеличиваем задержку между попытками
         except Exception as e:
             logging.error(f"Неожиданная ошибка при парсинге: {e}")
-    logging.warning("Все попытки исчерпаны, возвращаем кэш")
-    return last_matches
+    
+    logging.error("❌ Все попытки загрузки страницы провалились")
+    return []  # Возвращаем пустой список вместо кэша
 
 # === Форматирование сообщений ===
 def format_match_message(match, include_ticket=True):
@@ -199,11 +230,16 @@ def format_match_message(match, include_ticket=True):
 # === Проверка обновлений ===
 async def monitor_matches():
     global last_matches
-    await asyncio.sleep(5)
+    await asyncio.sleep(10)  # Даем больше времени на старт
     logging.info("🏁 Мониторинг матчей запущен!")
     while True:
         try:
             current_matches = await fetch_matches()
+            
+            if not current_matches:
+                logging.warning("⚠️ Не удалось загрузить матчи, пропускаем проверку")
+                await asyncio.sleep(CHECK_INTERVAL)
+                continue
             
             if last_matches:
                 # Создаем словари для быстрого поиска
@@ -312,7 +348,7 @@ async def start_cmd(message: types.Message):
             match_message = format_match_message(match)
             await message.answer(match_message)
     else:
-        await message.answer("Пока нет доступных матчей.")
+        await message.answer("❌ Не удалось загрузить матчи. Попробуйте позже.")
 
 @dp.message(Command("stop"))
 async def stop_cmd(message: types.Message):
@@ -330,7 +366,8 @@ async def stop_cmd(message: types.Message):
 
 @dp.message(Command("status"))
 async def status_cmd(message: types.Message):
-    last_check = time.strftime("%Y-%m-%d %H:%M:%S")
+    # Используем московское время для статуса
+    current_time = get_moscow_time()
     matches_with_tickets = sum(1 for match in last_matches if match['has_ticket']) if last_matches else 0
     home_matches = sum(1 for match in last_matches if not match['is_away_match']) if last_matches else 0
     away_matches = sum(1 for match in last_matches if match['is_away_match']) if last_matches else 0
@@ -342,7 +379,7 @@ async def status_cmd(message: types.Message):
         f"🔵 Домашних: {home_matches}\n"
         f"🟡 Выездных: {away_matches}\n"
         f"🎫 С билетами: {matches_with_tickets}\n"
-        f"⏰ Последняя проверка: {last_check}\n"
+        f"⏰ Текущее время: {current_time}\n"
         f"🔄 Интервал проверки: {CHECK_INTERVAL} сек"
     )
     await message.answer(status_msg)
@@ -355,8 +392,7 @@ async def keep_awake():
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(APP_URL, timeout=5) as resp:
-                    response_text = await resp.text()
+                async with session.get(APP_URL, timeout=10) as resp:
                     if resp.status == 200:
                         logging.info(f"Keep-awake ping: status {resp.status}")
                         current_interval = 840
